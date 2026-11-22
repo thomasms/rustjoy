@@ -1,0 +1,23 @@
+[package]
+name = "reconr-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the RECONR module of NJOY2016"
+license = "BSD-3-Clause"
+
+[lib]
+name = "reconr_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "njoy-reconr"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+# Keep floating-point semantics plain: no fast-math exists in Rust, and we keep
+# overflow-checks off to match Fortran's wrapping integer arithmetic.
+opt-level = 2
+debug = 1
+overflow-checks = false
