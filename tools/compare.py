@@ -141,7 +141,7 @@ def compare_case(fortran, rust, case_dir, work, timeout):
     name = os.path.basename(case_dir)
     base = os.path.join(work, name)
     if os.path.exists(base):
-        shutil.rmtree(base)
+        sys.exit("%s exists: give a new work directory (nothing is deleted)" % base)
     pre = os.path.join(base, "pre")
     shutil.copytree(os.path.join(case_dir, "tapes"), pre)
     shutil.copy(os.path.join(case_dir, "pre.input"), pre)
@@ -149,9 +149,9 @@ def compare_case(fortran, rust, case_dir, work, timeout):
     rc, _, _, _ = run(fortran, pre, "pre.input", timeout)
     if rc != 0:
         return {"case": name, "status": "setup-failed"}
-    for f in ("output",):
-        if os.path.exists(os.path.join(pre, f)):
-            os.remove(os.path.join(pre, f))
+    # keep the moder listing, but not under the name the RECONR run writes
+    if os.path.exists(os.path.join(pre, "output")):
+        os.rename(os.path.join(pre, "output"), os.path.join(pre, "pre_output.txt"))
     before = snapshot(pre)
     res = {"case": name}
     dirs = {}

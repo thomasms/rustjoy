@@ -52,7 +52,7 @@ def main():
         for v, (cards,) in VARIANTS.items():
             dst = os.path.join(corpus, "%s_%s" % (b, v))
             if os.path.exists(dst):
-                shutil.rmtree(dst)
+                sys.exit("%s exists (nothing is deleted)" % dst)
             shutil.copytree(src, dst, symlinks=True)
             with open(os.path.join(dst, "run.input"), "w") as f:
                 f.write("reconr\n %d 98/\n 'variant of %s'/\n" % (nin, b))

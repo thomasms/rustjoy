@@ -111,7 +111,7 @@ def main():
             name_c = "%s_%d" % (t, k)
             case = os.path.join(out, name_c)
             if os.path.exists(case):
-                shutil.rmtree(case)
+                sys.exit("%s exists: give a new corpus directory (nothing is deleted)" % case)
             os.makedirs(os.path.join(case, "tapes"))
             for tape, res in tapes.items():
                 os.symlink(os.path.join(os.path.abspath(tests), "resources", res), os.path.join(case, "tapes", tape))
@@ -159,7 +159,7 @@ def main():
             tail2 = tail[:mm.start()] + "%d%s%d" % (src_tape, mm.group(2), 98) + tail[mm.end():]
             casea = case + "_a"
             if os.path.exists(casea):
-                shutil.rmtree(casea)
+                sys.exit("%s exists: give a new corpus directory (nothing is deleted)" % casea)
             shutil.copytree(case, casea, symlinks=True)
             with open(os.path.join(casea, "pre.input"), "w") as f:
                 f.write("stop\n")

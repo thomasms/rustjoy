@@ -1026,6 +1026,10 @@ impl Reconr {
 
     // ================================================================ rdf2bw
     fn rdf2bw(&mut self, c: &mut Ctx, nin: i32, jnow: &mut i32, lrf: i32, nro: i32, naps: i32, mode: i32) {
+        // facts sets nothing for l > 4: the Fortran then keeps the values of
+        // the previous call, so these live for the whole routine.
+        let (mut sec, mut pec) = (0.0f64, 0.0f64);
+        let (mut ser, mut per) = (0.0f64, 0.0f64);
         let rc1 = 0.123e0f64;
         let rc2 = 0.08e0f64;
         let third = 0.333333333e0f64;
@@ -1144,7 +1148,6 @@ impl Reconr {
                     }
                 }
                 let rho = cwaven * arat * sqrt(self.res[jn].abs()) * ral;
-                let (mut ser, mut per) = (0.0, 0.0);
                 facts(ll, rho, &mut ser, &mut per);
                 self.res[jj] = ser;
                 self.res[jj + 1] = per;
@@ -1161,7 +1164,6 @@ impl Reconr {
                     if ll == 2 {
                         lp = 0;
                     }
-                    let (mut sec, mut pec) = (0.0, 0.0);
                     facts(lp, rhoc, &mut sec, &mut pec);
                     self.res[jj + 2] = self.res[jn + 2] - self.res[jn + 3] - self.res[jn + 4] - self.res[jn + 5];
                     if self.res[jj + 2] < gxmin * self.res[jn + 2] {
@@ -3042,6 +3044,9 @@ impl Reconr {
     fn csslbw(&mut self, c: &mut Ctx, e: f64, sigp: &mut RV) {
         let pi = crate::util::physics::PI;
         let bk = crate::util::physics::BK;
+        // facts sets nothing for l > 4: the Fortran then keeps the values of
+        // the previous call, so these live for the whole routine.
+        let (mut se, mut pe) = (0.0f64, 0.0f64);
         let rc1 = 0.123e0f64;
         let rc2 = 0.08e0f64;
         let third = 0.333333333e0f64;
@@ -3079,7 +3084,6 @@ impl Reconr {
             let qx = self.res[inow + 1];
             self.lrx = nint(self.res[inow + 3]);
             let mut in_ = inow + nrs * 6 + 6;
-            let (mut se, mut pe) = (0.0, 0.0);
             facts(ll, rho, &mut se, &mut pe);
             let mut pec = 0.0;
             if self.lrx != 0 {
@@ -3192,6 +3196,9 @@ impl Reconr {
         let pi = crate::util::physics::PI;
         let rc1 = 0.123e0f64;
         let rc2 = 0.08e0f64;
+        // facts sets nothing for l > 4: the Fortran then keeps the values of
+        // the previous call, so these live for the whole routine.
+        let (mut se, mut pe) = (0.0f64, 0.0f64);
         let third = 0.333333333e0f64;
         let half = 0.5e0f64;
         let zero = 0.0f64;
@@ -3249,7 +3256,6 @@ impl Reconr {
             let ll = nint(self.res[inow + 2]);
             let qx = self.res[inow + 1];
             self.lrx = nint(self.res[inow + 3]);
-            let (mut se, mut pe) = (0.0, 0.0);
             facts(ll, rho, &mut se, &mut pe);
             let mut pec = 0.0;
             if self.lrx != 0 {
@@ -3342,6 +3348,9 @@ impl Reconr {
         let bk = crate::util::physics::BK;
         let rc1 = 0.123e0f64;
         let rc2 = 0.08e0f64;
+        // facts sets nothing for l > 4: the Fortran then keeps the values of
+        // the previous call, so these live for the whole routine.
+        let (mut se, mut pe) = (0.0f64, 0.0f64);
         let third = 0.333333333e0f64;
         let tmin = 10e0f64;
         let zero = 0.0f64;
@@ -3392,7 +3401,6 @@ impl Reconr {
             let qx = self.res[inow + 1];
             self.lrx = nint(self.res[inow + 3]);
             let in_ = inow + nrs * 6 + 6;
-            let (mut se, mut pe) = (0.0, 0.0);
             facts(ll, rho, &mut se, &mut pe);
             let mut pec = 0.0;
             if self.lrx != 0 {
@@ -3496,6 +3504,9 @@ impl Reconr {
         let rc2 = 0.08e0f64;
         let third = 0.333333333e0f64;
         let quar = 0.25e0f64;
+        // facts sets nothing for l > 4: the Fortran then keeps the values of
+        // the previous call, so these live for the whole routine.
+        let (mut se, mut dum1) = (0.0f64, 0.0f64);
         let haf = 0.5e0f64;
         let uno = 1.0e0f64;
         let two = 2.0e0f64;
@@ -3556,7 +3567,6 @@ impl Reconr {
             if apl != zero && naps == 1 {
                 rho = k * apl;
             }
-            let (mut se, mut dum1) = (0.0, 0.0);
             facts(ll, rho, &mut se, &mut dum1);
             let pe = dum1;
             let phi = facphi(ll, rhoc);
@@ -3994,6 +4004,9 @@ impl Reconr {
         let mut elast;
         let mut ie;
         let mut iest = self.sv.iest_u1;
+        // unfac sets nothing for l >= 3: the Fortran then reuses the vl/ps
+        // of the previous (l, j) step, so they must live for the whole call.
+        let (mut vl, mut ps) = (0.0f64, 0.0f64);
         let mut lbl;
         if ifirst > 0 {
             // 100
@@ -4150,7 +4163,6 @@ impl Reconr {
                             let k = rat * e2 * cwaven;
                             let rho = k * aa;
                             let rhoc = k * ay;
-                            let (mut vl, mut ps) = (0.0, 0.0);
                             unfac(ll, rho, rhoc, amun, &mut vl, &mut ps);
                             vl = vl * e2;
                             if j == 1 {
@@ -4271,6 +4283,9 @@ impl Reconr {
         let mut elast;
         let mut ie;
         let mut lbl;
+        // unfac sets nothing for l >= 3: the Fortran then reuses the vl/ps
+        // of the previous (l, j) step, so they must live for the whole call.
+        let (mut vl, mut ps) = (0.0f64, 0.0f64);
         if ifirst > 0 {
             enext = self.enxt[is];
             elast = self.elst[is];
@@ -4390,7 +4405,6 @@ impl Reconr {
                             if gfx < small {
                                 gfx = 0.0;
                             }
-                            let (mut vl, mut ps) = (0.0, 0.0);
                             unfac(ll, rho, rhoc, amun, &mut vl, &mut ps);
                             vl = vl * e2;
                             if j <= 1 {
