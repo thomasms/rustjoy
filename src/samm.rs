@@ -1120,7 +1120,7 @@ impl Samm {
 
     fn findsp(&mut self, c: &mut Ctx, llll: i32, spinjj: f64, s1: f64, s2: f64, ier: i32) -> i32 {
         let zero = 0.0f64;
-        let mut ig = 0;
+        let ig = 0;
         for i in 1..=self.ngroup {
             // the Fortran passes sspin as a 1-D array: spin(i) is sspin(i,1)
             let a = self.sspin.v[(i - 1) as usize].abs();
@@ -3164,7 +3164,7 @@ pub fn bigeta(
     let zhalf = sqrt(q);
     let z = zhalf * 2.0;
     // 1./(k+1) is a default (single precision) real division
-    let inv1 = |k: i32| ((1.0f32 / ((k + 1) as f32)) as f64);
+    let inv1 = |k: i32| (1.0f32 / ((k + 1) as f32)) as f64;
     let ksq = |k: i32| ((k + 1) * (k + 1)) as f64;
 
     let mut sum = 1.0;

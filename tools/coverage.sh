@@ -6,7 +6,6 @@
 # written under WORK_DIR/gcda through GCOV_PREFIX, not next to the build.
 set -e
 B=$(cd "$1" && pwd); C=$(cd "$2" && pwd); W=$3
-SRC=$(cd "$B/../src" && pwd)
 OBJ="$B/CMakeFiles/njoy_executable.dir/src"
 if [ -e "$W" ]; then echo "$W exists; give a new directory" >&2; exit 1; fi
 mkdir -p "$W/runs" "$W/gcda"
@@ -20,7 +19,7 @@ done
 G="$W/gcda$OBJ"
 for f in reconr samm; do
   cp "$OBJ/$f.f90.gcno" "$G/"
-  (cd "$W" && gcov -o "$G" "$SRC/$f.f90" >/dev/null)
+  (cd "$W" && gcov -o "$G" "$G/$f.f90.gcda" >/dev/null)
   # executable lines: count field not '-'; covered: not '#####'
   awk -F: '$1 !~ /-/ {t++; if ($1 !~ /#####/) c++} END {printf "%s: %d of %d executable lines run (%.1f%%)\n", FILENAME, c, t, 100*c/t}' "$W/$f.f90.gcov"
 done

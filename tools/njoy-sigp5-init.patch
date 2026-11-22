@@ -1,0 +1,20 @@
+--- a/src/reconr.f90
++++ b/src/reconr.f90
+@@ -3639,7 +3639,7 @@
+      'doppler broadening not provided for hybrid r-mtrix.',' ')
+ 
+    !--zero out cross section contribution from this section (sigp)
+-   do i=1,4
++   do i=1,nsig
+       sigp(i)=0
+    enddo
+ 
+@@ -4337,7 +4337,7 @@
+    cwaven=sqrt(2*amassn*amu*ev)*1.e-12_kr/hbar
+ 
+    !--compute cross sections for this energy
+-   do i=1,4
++   do i=1,nsig
+       sigp(i)=0
+    enddo
+    ! retrieve starting location for data in a
