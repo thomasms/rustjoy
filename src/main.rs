@@ -1,12 +1,12 @@
-//! `njoy-reconr`: a Rust port of the RECONR module of NJOY2016.
+//! `njoy-reconr`: a Rust port of the RECONR and BROADR modules of NJOY2016.
 //!
 //! Usage is the same as `njoy`: the input deck is read from standard input,
 //! the listing is written to the file `output`, terminal messages go to
 //! standard output, and ENDF/PENDF tapes are `tapeNN` files in the current
-//! directory. Only the `reconr` module (and `--` comment cards) are
-//! supported.
+//! directory. Only the `reconr` and `broadr` modules (and `--` comment
+//! cards) are supported.
 
-use reconr_rs::{endf, ffmt, fio, reconr, util};
+use reconr_rs::{broadr, endf, ffmt, fio, reconr, util};
 
 use std::io::Read;
 
@@ -51,6 +51,7 @@ fn main() {
     ctx.io.se(&format!("\n njoy {} {}{}{} {}\n {}", VERS, VDAY, " ".repeat(38), date, time, star77));
 
     let mut rc = reconr::Reconr::new();
+    let mut br = broadr::Broadr::new();
     loop {
         let v = ctx.io.input.read(&[fio::Kind::Char(6)]);
         // a null value leaves the variable unchanged (blank on first read)
@@ -65,6 +66,9 @@ fn main() {
         match m {
             "reconr" => {
                 rc.reconr(&mut ctx);
+            }
+            "broadr" => {
+                br.broadr(&mut ctx);
             }
             "--" => {}
             _ => {

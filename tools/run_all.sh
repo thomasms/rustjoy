@@ -40,9 +40,21 @@ C="$W/corpus"
 python3 "$R/tools/build_corpus.py" "$N" "$C"
 python3 "$R/tools/make_variants.py" "$C" 02_1_a 18_1_a 36_1_a 82_2_a 19_1_a 26_1_a 81_1_a 60_1_a 21_1
 python3 "$R/tools/make_synthetic.py" "$N" "$C"
+CB="$W/corpus-broadr"
+python3 "$R/tools/build_corpus.py" "$N" "$CB" --module broadr
+CV="$W/corpus-broadr-var"
+mkdir -p "$CV"
+BB="01_1 36_1_a 19_1 28_1_a 60_1_a 02_1 02_1_a"
+for b in $BB; do cp -a "$CB/$b" "$CV/"; done
+python3 "$R/tools/make_variants_broadr.py" "$CV" $BB --multi 02_1 1056
 
 echo "== compare Fortran and Rust, byte for byte"
+echo "   reconr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$C" "$W/compare" | tail -1
+echo "   broadr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CB" "$W/compare-broadr" | tail -1
+echo "   broadr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CV" "$W/compare-broadr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -60,6 +72,23 @@ if cmp -s "$W/num/fortran.txt" "$W/num/rust.txt"; then
 else
   echo "   DIFFER: see $W/num"; exit 1
 fi
+sed 's/^   public broadr$/   public broadr, hnabb/' "$N/src/broadr.f90" > "$W/num/broadr_pub.f90"
+(cd "$W/num" && gfortran -O0 -o numcheck_broadr "$N/src/locale.f90" "$N/src/mainio.f90" \
+   "$N/src/phys.f90" "$N/src/util.f90" "$N/src/endf.f90" "$N/src/mathm.f90" \
+   broadr_pub.f90 "$R/tools/numcheck_broadr.f90" 2> /dev/null)
+(cd "$R" && CARGO_TARGET_DIR="$W/target" cargo build --release -q --example numcheck_broadr)
+python3 "$R/tools/numcheck_gen.py" broadr > "$W/num/in_broadr.bin"
+"$W/num/numcheck_broadr" < "$W/num/in_broadr.bin" > "$W/num/fortran_broadr.txt"
+"$W/target/release/examples/numcheck_broadr" < "$W/num/in_broadr.bin" > "$W/num/rust_broadr.txt"
+if cmp -s "$W/num/fortran_broadr.txt" "$W/num/rust_broadr.txt"; then
+  echo "   erfc/hnabb identical: $(wc -l < "$W/num/rust_broadr.txt") inputs (6 values each)"
+else
+  echo "   erfc/hnabb DIFFER: see $W/num"; exit 1
+fi
 
 echo "== Fortran line coverage of the corpus"
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$C" "$W/coverage"
+CA="$W/corpus-broadr-all"
+mkdir -p "$CA"
+for d in "$CB"/* "$CV"/*; do [ -e "$CA/$(basename "$d")" ] || ln -s "$d" "$CA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CA" "$W/coverage-broadr" broadr mathm

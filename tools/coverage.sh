@@ -1,11 +1,12 @@
 #!/bin/bash
 # Run every corpus case with a gcov-instrumented NJOY build and report the
-# line coverage of reconr.f90 and samm.f90.
-# Usage: coverage.sh BUILD_COV_DIR CORPUS_DIR WORK_DIR
+# line coverage of the given Fortran sources (default: reconr samm).
+# Usage: coverage.sh BUILD_COV_DIR CORPUS_DIR WORK_DIR [source ...]
 # WORK_DIR must not exist yet. Nothing is deleted: the counters (.gcda) are
 # written under WORK_DIR/gcda through GCOV_PREFIX, not next to the build.
 set -e
 B=$(cd "$1" && pwd); C=$(cd "$2" && pwd); W=$3
+shift 3; SRCS=${*:-reconr samm}
 OBJ="$B/CMakeFiles/njoy_executable.dir/src"
 if [ -e "$W" ]; then echo "$W exists; give a new directory" >&2; exit 1; fi
 mkdir -p "$W/runs" "$W/gcda"
@@ -17,7 +18,7 @@ for d in "$C"/*/; do
   (cd "$w" && "$B/njoy" < "$d/pre.input" >/dev/null 2>&1; "$B/njoy" < "$d/run.input" >/dev/null 2>&1) || true
 done
 G="$W/gcda$OBJ"
-for f in reconr samm; do
+for f in $SRCS; do
   cp "$OBJ/$f.f90.gcno" "$G/"
   (cd "$W" && gcov -o "$G" "$G/$f.f90.gcda" >/dev/null)
   # executable lines: count field not '-'; covered: not '#####'

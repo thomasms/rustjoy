@@ -1,13 +1,36 @@
 # rustjoy
 
-A Rust port of the **RECONR** module of [NJOY2016](https://github.com/njoy/NJOY2016)
-(commit `ab27c64`, version 2016.80), with a harness that checks it against the
-Fortran program byte for byte.
+A Rust port of the **RECONR** and **BROADR** modules of
+[NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
+2016.80), with a harness that checks them against the Fortran program byte
+for byte.
 
-RECONR reconstructs pointwise cross sections from ENDF resonance parameters
-and writes a PENDF tape.
+* RECONR reconstructs pointwise cross sections from ENDF resonance
+  parameters and writes a PENDF tape.
+* BROADR Doppler-broadens and thins those pointwise cross sections to one or
+  more temperatures.
 
-## Results
+## Results: BROADR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every BROADR run in the NJOY2016 test suite, binary and ASCII forms | 108 | **108** |
+| Variants: 3 temperatures, bootstrap, thinning only, negative `thnmax`, > 9999 K, 293.6 K thermal quantities, restart, two materials in one call, skipping a material | 51 | **51** |
+| Numeric kernels `erfc` and `hnabb` (n = 0..4) | 1,000,152 inputs, 6 values each | **all** |
+
+Fortran line coverage of the 159 cases: `broadr.f90` 1,073 of 1,135
+executable lines run (**94.5%**); `erfc` 28 of its 30 lines. What is not run:
+error exits, MT152 data with several σ₀ values or with resolved/unresolved
+overlap (RECONR does not write either), MF1 sections longer than one page,
+and the branches that need more than one page of points (about 10⁶ per
+reaction set), among them the `bsigma` truncation warning.
+
+Found during the comparison: the listing line with the broadened MT numbers
+(`16i4,(/11x,16i4)`) has an empty line before each group of 16 after the
+second, because format reversion ends a record and the `/` ends another.
+The port now writes the same.
+
+## Results: RECONR
 
 | Check | Cases | Identical |
 | --- | --- | --- |
@@ -63,7 +86,9 @@ versions), which is why synthetic data was needed to test them at all.
 | `samm.f90` (7,169 lines) | `src/samm.rs` | every routine RECONR can reach (LRF=7 R-matrix limited, incl. Coulomb functions and the complex symmetric solver) |
 | `endf.f90` | `src/endf.rs` | ENDF tape I/O, `a11`, interpolation |
 | `util.f90`, `phys.f90` | `src/util.rs` | `sigfig`, `a10`, scratch buffers, constants |
-| `main.f90` | `src/main.rs` | banner and module loop (`reconr` only) |
+| `broadr.f90` (1,947 lines) | `src/broadr.rs` | all routines |
+| `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC) |
+| `main.f90` | `src/main.rs` | banner and module loop (`reconr` and `broadr`) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
 Not ported (unreachable from RECONR):
@@ -87,8 +112,9 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ./target/release/njoy-reconr < input
 ```
 
-Decks may contain `reconr` and `--` cards; any other module name stops with
-`illegal module name`.
+Decks may contain `reconr`, `broadr` and `--` cards; any other module name
+stops with `illegal module name`. For other modules in a chain, run them
+with the Fortran `njoy` on the same tapes.
 
 ## How equivalence is checked
 
@@ -105,7 +131,12 @@ Decks may contain `reconr` and `--` cards; any other module name stops with
 3. **Synthetic data** (`tools/make_synthetic.py`): the MF2 of Pu-241 is
    replaced by made-up Adler-Adler (LI = 5, 6, 7; 0 K and Doppler) and
    hybrid R-function data (0 K, and the temperature error exit).
-4. **Comparison** (`tools/compare.py`): each case is run with the Fortran
+4. **BROADR corpus** (`tools/build_corpus.py --module broadr`): every BROADR
+   call in the test suite becomes a case. `pre.input` holds all the modules
+   before the call (the Fortran runs them to make the PENDF input), and the
+   `_a` form makes the whole chain ASCII. 108 cases.
+   `tools/make_variants_broadr.py` adds the 51 option variants.
+5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
    **byte for byte**. Only these bytes are masked, because they differ between
@@ -115,10 +146,12 @@ Decks may contain `reconr` and `--` cards; any other module name stops with
      Hollerith card in binary MF1/MT451 records. The Fortran fills them from
      uninitialised memory (`equivalence` of `character(4)` and `real(kr)`
      arrays). They never appear in ASCII tapes.
-5. **Numeric kernels** (`tools/numcheck_gen.py`, `tools/numcheck.f90`,
+6. **Numeric kernels** (`tools/numcheck_gen.py`, `tools/numcheck.f90`,
    `examples/numcheck.rs`): 2,009,128 edge-case and seeded random values go
-   through both languages and the outputs are compared byte for byte.
-6. **Coverage** (`tools/coverage.sh`): a gcov build of NJOY runs the corpus,
+   through both languages and the outputs are compared byte for byte. For
+   BROADR, `tools/numcheck_broadr.f90` and `examples/numcheck_broadr.rs` do
+   the same for `erfc` and `hnabb` (`numcheck_gen.py broadr`).
+7. **Coverage** (`tools/coverage.sh`): a gcov build of NJOY runs the corpus,
    to show which Fortran lines the comparison exercises.
 
 To rerun everything (builds three Fortran copies, the port, the corpus, and
@@ -154,7 +187,11 @@ purpose:
 * SAMMY arrays are flat column-major memory with the declared shapes, so
   routines that receive only the first slice (`scale3`, `yfour`) or read
   along the wrong index (`backgrdata` in `tab1io`) behave the same;
-* CR-LF line ends are record ends, as in libgfortran.
+* CR-LF line ends are record ends, as in libgfortran;
+* `initds` adds `abs(real(os(i)))`: each coefficient is rounded to single
+  precision first, as the Fortran `real()` does;
+* format reversion and trailing `/` produce the same empty records as
+  libgfortran (checked against gfortran for the formats used).
 
 ## Known limits
 
@@ -166,6 +203,14 @@ purpose:
   branch, `eeff` in `cshybr` when there are no competing channels but a
   background R-function or phase table is given, and the first (l, J) step
   when it already has l ≥ 3 (`unfac`) or l > 4 (`facts`).
+* BROADR: `thinb` reads its local `tt` before setting it on every page
+  after the first, `getunx` can read `loc1` unset, and `mt4i` and `ftev`
+  can be read unset. The port keeps `tt` from the previous page and uses 0
+  for the others. None of these paths is reached by the test cases (they
+  need more than one page of points, or unusual MT152/MT51 data).
+* BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
+  capture g-factor" line almost never appears. That is NJOY2016's
+  behaviour, and the port copies it.
 * In `cshybr` the `facts` outputs are not yet kept between calls for l > 4
   (as they are in the other routines); hybrid data with l > 4 is not tested.
 * Only Linux x86-64 with glibc was tested. Another libm can change the last
