@@ -156,7 +156,14 @@ pub struct Io {
     pub out: Vec<u8>,
     pub out_path: String,
     pub input: ListInput,
+    /// worker mode (see `detached`): nothing is written anywhere
+    pub quiet: bool,
+    /// set in worker mode when anything tried to write
+    pub touched: bool,
 }
+
+/// Payload of the unwind that `Ctx::error` starts in worker mode.
+pub struct WorkerAbort;
 
 impl Io {
     pub fn new(input_text: Vec<u8>, out_path: &str) -> Box<Io> {
@@ -165,6 +172,8 @@ impl Io {
             out: Vec::new(),
             out_path: out_path.to_string(),
             input: ListInput::new(input_text),
+            quiet: false,
+            touched: false,
         });
         unsafe {
             IO_PTR = &mut *io as *mut Io;
@@ -172,15 +181,39 @@ impl Io {
         io
     }
 
+    /// An `Io` for a worker thread that computes values ahead of the main
+    /// program: it has no units, writes nothing (listing, terminal, files)
+    /// and does not register itself for the global flush. Any attempt to
+    /// write sets `touched`, so the worker knows its result had a side
+    /// effect and must not be used in place of the real call.
+    pub fn detached() -> Box<Io> {
+        Box::new(Io {
+            units: HashMap::new(),
+            out: Vec::new(),
+            out_path: String::new(),
+            input: ListInput::new(Vec::new()),
+            quiet: true,
+            touched: false,
+        })
+    }
+
     /// Write one or more records to the listing (nsyso). `s` may contain '\n'
     /// for Fortran '/' record breaks; a final newline is added.
     pub fn so(&mut self, s: &str) {
+        if self.quiet {
+            self.touched = true;
+            return;
+        }
         self.out.extend_from_slice(s.as_bytes());
         self.out.push(b'\n');
     }
 
     /// Write to the terminal (nsyse).
     pub fn se(&mut self, s: &str) {
+        if self.quiet {
+            self.touched = true;
+            return;
+        }
         let stdout = std::io::stdout();
         let mut h = stdout.lock();
         let _ = h.write_all(s.as_bytes());
@@ -188,6 +221,9 @@ impl Io {
     }
 
     pub fn flush_all(&mut self) {
+        if self.quiet {
+            return;
+        }
         let _ = fs::write(&self.out_path, &self.out);
         for (_, u) in self.units.iter_mut() {
             if u.dirty {

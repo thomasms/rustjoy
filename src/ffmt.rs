@@ -8,21 +8,89 @@
 
 #![allow(dead_code)]
 
+/// Small stack buffer used to build one edited field without heap
+/// allocation. `push` reports overflow; callers then use the `_ref` code.
+struct Buf {
+    b: [u8; 96],
+    n: usize,
+    over: bool,
+}
+
+impl Buf {
+    #[inline]
+    fn new() -> Buf {
+        Buf { b: [0; 96], n: 0, over: false }
+    }
+    #[inline]
+    fn push(&mut self, c: u8) {
+        if self.n < self.b.len() {
+            self.b[self.n] = c;
+            self.n += 1;
+        } else {
+            self.over = true;
+        }
+    }
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        &self.b[..self.n]
+    }
+}
+
+impl std::fmt::Write for Buf {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for &c in s.as_bytes() {
+            self.push(c);
+        }
+        if self.over { Err(std::fmt::Error) } else { Ok(()) }
+    }
+}
+
+/// Right-justify `s` in a field of width w (stars if it does not fit).
+#[inline]
+fn rjust_bytes(s: &[u8], w: usize) -> String {
+    let mut out = String::with_capacity(w);
+    if s.len() > w {
+        for _ in 0..w {
+            out.push('*');
+        }
+    } else {
+        for _ in s.len()..w {
+            out.push(' ');
+        }
+        // s is ASCII
+        out.push_str(std::str::from_utf8(s).unwrap());
+    }
+    out
+}
+
 fn stars(w: usize) -> String {
     "*".repeat(w)
 }
 
-fn rjust(s: &str, w: usize) -> String {
-    if s.len() > w {
-        stars(w)
-    } else {
-        format!("{:>w$}", s, w = w)
-    }
-}
-
 /// `Iw`.
 pub fn i(v: i32, w: usize) -> String {
-    rjust(&v.to_string(), w)
+    let mut d = [0u8; 12];
+    let mut n = 0;
+    let mut u = (v as i64).unsigned_abs();
+    loop {
+        d[n] = b'0' + (u % 10) as u8;
+        n += 1;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    let mut s = [0u8; 12];
+    let mut m = 0;
+    if v < 0 {
+        s[0] = b'-';
+        m = 1;
+    }
+    for k in (0..n).rev() {
+        s[m] = d[k];
+        m += 1;
+    }
+    rjust_bytes(&s[..m], w)
 }
 
 /// `I0`.
@@ -33,6 +101,249 @@ pub fn i0(v: i32) -> String {
 /// `Aw` output of a string (Fortran semantics: if the string is longer than w,
 /// the leftmost w characters are written; if shorter, it is right-justified).
 pub fn a(s: &str, w: usize) -> String {
+    a_ref(s, w)
+}
+
+/// `kP,Fw.d`. Same rules as `fp_ref` (the digits come from Rust's exact
+/// decimal conversion in both); only the string handling differs.
+pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
+    use std::fmt::Write;
+    let neg = x.is_sign_negative();
+    let ax = x.abs();
+    let dd = (d as i32 + k).max(0) as usize;
+    let mut raw = Buf::new();
+    if write!(raw, "{:.*}", dd, ax).is_err() {
+        return fp_ref(x, w, d, k);
+    }
+    let raw = raw.bytes();
+    // body: the decimal string with the point moved right by k
+    let mut body = Buf::new();
+    if k == 0 {
+        for &c in raw {
+            body.push(c);
+        }
+    } else {
+        let p = raw.iter().position(|&c| c == b'.');
+        let (ip, fpart) = match p {
+            Some(p) => (&raw[..p], &raw[p + 1..]),
+            None => (raw, &raw[raw.len()..]),
+        };
+        let nd = ip.len() + fpart.len();
+        let digit = |j: usize| if j < ip.len() { ip[j] } else { fpart[j - ip.len()] };
+        let mut point = ip.len() as i32 + k;
+        // digits padded with zeros at the end (point > nd) or the front
+        let lead = if point < 0 { (-point) as usize } else { 0 };
+        if point < 0 {
+            point = 0;
+        }
+        let total = (nd + lead).max(point as usize);
+        let get = |j: usize| -> u8 {
+            if j < lead {
+                b'0'
+            } else if j - lead < nd {
+                digit(j - lead)
+            } else {
+                b'0'
+            }
+        };
+        let point = point as usize;
+        // integer part without leading zeros ("0" if empty)
+        let mut j0 = 0;
+        while j0 < point && get(j0) == b'0' {
+            j0 += 1;
+        }
+        if j0 == point {
+            body.push(b'0');
+        } else {
+            for j in j0..point {
+                body.push(get(j));
+            }
+        }
+        body.push(b'.');
+        for j in point..total {
+            body.push(get(j));
+        }
+    }
+    if body.over {
+        return fp_ref(x, w, d, k);
+    }
+    if d == 0 && !body.bytes().ends_with(b".") && !body.bytes().contains(&b'.') {
+        body.push(b'.');
+    }
+    let bb = body.bytes();
+    let sl = bb.len() + neg as usize;
+    let drop0 = sl > w && bb.starts_with(b"0.");
+    let mut s = Buf::new();
+    if neg {
+        s.push(b'-');
+    }
+    for &c in if drop0 { &bb[1..] } else { bb } {
+        s.push(c);
+    }
+    if s.over {
+        return fp_ref(x, w, d, k);
+    }
+    rjust_bytes(s.bytes(), w)
+}
+
+/// `Fw.d` (scale factor 0).
+pub fn f(x: f64, w: usize, d: usize) -> String {
+    fp(x, w, d, 0)
+}
+
+/// `kP,Ew.d` with the default exponent field (gfortran). Same rules as
+/// `ep_ref`, without heap strings.
+pub fn ep(x: f64, w: usize, d: usize, k: i32) -> String {
+    use std::fmt::Write;
+    let neg = x.is_sign_negative();
+    let ax = x.abs();
+    if !ax.is_finite() {
+        return ep_ref(x, w, d, k);
+    }
+    let nsig: usize = if k > 0 { d + 1 } else { d };
+    let mut mant = Buf::new();
+    let mut e10: i32;
+    if ax == 0.0 {
+        e10 = 0;
+    } else {
+        let mut raw = Buf::new();
+        if write!(raw, "{:.*e}", nsig.saturating_sub(1), ax).is_err() {
+            return ep_ref(x, w, d, k);
+        }
+        let r = raw.bytes();
+        let p = r.iter().position(|&c| c == b'e').unwrap();
+        for &c in &r[..p] {
+            if c != b'.' {
+                mant.push(c);
+            }
+        }
+        let (eneg, ed) = if r[p + 1] == b'-' { (true, &r[p + 2..]) } else { (false, &r[p + 1..]) };
+        let mut ev = 0i32;
+        for &c in ed {
+            ev = ev * 10 + (c - b'0') as i32;
+        }
+        e10 = if eneg { -ev } else { ev };
+    }
+    let mut body = Buf::new();
+    if ax == 0.0 {
+        e10 = 0;
+        if k > 0 {
+            let kk = k as usize;
+            if kk > d + 1 {
+                return ep_ref(x, w, d, k);
+            }
+            for _ in 0..kk {
+                body.push(b'0');
+            }
+            body.push(b'.');
+            for _ in 0..(d + 1 - kk) {
+                body.push(b'0');
+            }
+        } else {
+            body.push(b'0');
+            body.push(b'.');
+            for _ in 0..d {
+                body.push(b'0');
+            }
+        }
+    } else if k > 0 {
+        let kk = k as usize;
+        let m = mant.bytes();
+        if kk > m.len() {
+            return ep_ref(x, w, d, k);
+        }
+        for &c in &m[..kk] {
+            body.push(c);
+        }
+        body.push(b'.');
+        for &c in &m[kk..] {
+            body.push(c);
+        }
+        e10 = e10 - (k - 1);
+    } else {
+        body.push(b'0');
+        body.push(b'.');
+        for &c in mant.bytes() {
+            body.push(c);
+        }
+        e10 += 1;
+    }
+    let mut ex = Buf::new();
+    let ae = e10.unsigned_abs();
+    if ae <= 99 {
+        ex.push(b'E');
+        ex.push(if e10 < 0 { b'-' } else { b'+' });
+        ex.push(b'0' + (ae / 10) as u8);
+        ex.push(b'0' + (ae % 10) as u8);
+    } else if ae <= 999 {
+        ex.push(if e10 < 0 { b'-' } else { b'+' });
+        ex.push(b'0' + (ae / 100) as u8);
+        ex.push(b'0' + (ae / 10 % 10) as u8);
+        ex.push(b'0' + (ae % 10) as u8);
+    } else {
+        return stars(w);
+    }
+    if body.over || mant.over {
+        return ep_ref(x, w, d, k);
+    }
+    let bb = body.bytes();
+    let sl = neg as usize + bb.len() + ex.n;
+    let drop0 = sl > w && bb.starts_with(b"0.");
+    let mut s = Buf::new();
+    if neg {
+        s.push(b'-');
+    }
+    for &c in if drop0 { &bb[1..] } else { bb } {
+        s.push(c);
+    }
+    for &c in ex.bytes() {
+        s.push(c);
+    }
+    if s.over {
+        return ep_ref(x, w, d, k);
+    }
+    rjust_bytes(s.bytes(), w)
+}
+
+/// `Ew.d` (scale factor 0).
+pub fn e(x: f64, w: usize, d: usize) -> String {
+    ep(x, w, d, 0)
+}
+
+/// `1P,Ew.d`, the common NJOY form.
+pub fn e1p(x: f64, w: usize, d: usize) -> String {
+    ep(x, w, d, 1)
+}
+
+// Reference versions (the code before the allocation-free rewrite, checked
+// against gfortran). The fast versions above fall back to them for fields
+// longer than the stack buffer, and `examples/ffmt_check.rs` compares the two.
+
+fn stars_ref(w: usize) -> String {
+    "*".repeat(w)
+}
+
+fn rjust_ref(s: &str, w: usize) -> String {
+    if s.len() > w {
+        stars_ref(w)
+    } else {
+        format!("{:>w$}", s, w = w)
+    }
+}
+
+/// `Iw`.
+pub fn i_ref(v: i32, w: usize) -> String {
+    rjust_ref(&v.to_string(), w)
+}
+
+/// `I0`.
+pub fn i0_ref(v: i32) -> String {
+    v.to_string()
+}
+
+/// `Aw` output of a string (Fortran semantics: if the string is longer than w,
+/// the leftmost w characters are written; if shorter, it is right-justified).
+pub fn a_ref(s: &str, w: usize) -> String {
     if s.len() >= w {
         s[..w].to_string()
     } else {
@@ -41,7 +352,7 @@ pub fn a(s: &str, w: usize) -> String {
 }
 
 /// Shift the decimal point of a plain decimal string ("123.4567") right by k.
-fn shift_point(s: &str, k: i32) -> String {
+fn shift_point_ref(s: &str, k: i32) -> String {
     if k == 0 {
         return s.to_string();
     }
@@ -71,12 +382,12 @@ fn shift_point(s: &str, k: i32) -> String {
 }
 
 /// `kP,Fw.d`.
-pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
+pub fn fp_ref(x: f64, w: usize, d: usize, k: i32) -> String {
     let neg = x.is_sign_negative();
     let ax = x.abs();
     let dd = (d as i32 + k).max(0) as usize;
     let body = format!("{:.*}", dd, ax);
-    let mut body = shift_point(&body, k);
+    let mut body = shift_point_ref(&body, k);
     if d == 0 && !body.ends_with('.') {
         // shift_point always leaves a point; with d=0 Rust gives no point.
         if !body.contains('.') {
@@ -91,16 +402,16 @@ pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
         body = body[1..].to_string();
         s = format!("{}{}", sign, body);
     }
-    rjust(&s, w)
+    rjust_ref(&s, w)
 }
 
 /// `Fw.d` (scale factor 0).
-pub fn f(x: f64, w: usize, d: usize) -> String {
-    fp(x, w, d, 0)
+pub fn f_ref(x: f64, w: usize, d: usize) -> String {
+    fp_ref(x, w, d, 0)
 }
 
 /// `kP,Ew.d` with the default exponent field (gfortran).
-pub fn ep(x: f64, w: usize, d: usize, k: i32) -> String {
+pub fn ep_ref(x: f64, w: usize, d: usize, k: i32) -> String {
     let neg = x.is_sign_negative();
     let ax = x.abs();
     // number of significant digits
@@ -137,24 +448,24 @@ pub fn ep(x: f64, w: usize, d: usize, k: i32) -> String {
     } else if e10.abs() <= 999 {
         format!("{}{:03}", if e10 < 0 { '-' } else { '+' }, e10.abs())
     } else {
-        return stars(w);
+        return stars_ref(w);
     };
     let sign = if neg { "-" } else { "" };
     let mut s = format!("{}{}{}", sign, body, exp);
     if s.len() > w && body.starts_with("0.") {
         s = format!("{}{}{}", sign, &body[1..], exp);
     }
-    rjust(&s, w)
+    rjust_ref(&s, w)
 }
 
 /// `Ew.d` (scale factor 0).
-pub fn e(x: f64, w: usize, d: usize) -> String {
-    ep(x, w, d, 0)
+pub fn e_ref(x: f64, w: usize, d: usize) -> String {
+    ep_ref(x, w, d, 0)
 }
 
 /// `1P,Ew.d`, the common NJOY form.
-pub fn e1p(x: f64, w: usize, d: usize) -> String {
-    ep(x, w, d, 1)
+pub fn e1p_ref(x: f64, w: usize, d: usize) -> String {
+    ep_ref(x, w, d, 1)
 }
 
 // ----------------------------------------------------------------- input --
@@ -171,8 +482,191 @@ pub fn field(rec: &[u8], start: usize, w: usize) -> Vec<u8> {
 #[derive(Debug)]
 pub struct ReadError(pub String);
 
-/// `Iw` input (blank-null).
+/// A field of a record, blank padded, held on the stack (for the numeric
+/// fields of ENDF lines; `field` is the heap version).
+pub struct Fixed {
+    b: [u8; 128],
+    n: usize,
+}
+
+impl std::ops::Deref for Fixed {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        &self.b[..self.n]
+    }
+}
+
+/// `field` without heap allocation (w <= 128).
+#[inline]
+pub fn fieldx(rec: &[u8], start: usize, w: usize) -> Fixed {
+    assert!(w <= 128);
+    let mut f = Fixed { b: [b' '; 128], n: w };
+    if start < rec.len() {
+        let e = (start + w).min(rec.len());
+        f.b[..e - start].copy_from_slice(&rec[start..e]);
+    }
+    f
+}
+
+/// `Iw` input (blank-null). Fast path for plain integers; anything else is
+/// handed to `read_i_ref`, so results and error messages are the same.
 pub fn read_i(fld: &[u8]) -> Result<i32, ReadError> {
+    let mut neg = false;
+    let mut v: i64 = 0;
+    let mut nd = 0;
+    let mut seen = false;
+    for &c in fld {
+        if c == b' ' || c == b'\t' {
+            continue;
+        }
+        if !seen && (c == b'+' || c == b'-') {
+            neg = c == b'-';
+            seen = true;
+            continue;
+        }
+        seen = true;
+        if c.is_ascii_digit() && nd < 18 {
+            v = v * 10 + (c - b'0') as i64;
+            nd += 1;
+        } else {
+            return read_i_ref(fld);
+        }
+    }
+    if !seen {
+        return Ok(0);
+    }
+    if nd == 0 {
+        return read_i_ref(fld);
+    }
+    Ok((if neg { -v } else { v }) as i32)
+}
+
+/// `Fw.d` / `Ew.d` input (blank-null). Builds the same decimal text as
+/// `read_f_ref` on the stack and parses it the same way; any field that is
+/// not a plain number goes to `read_f_ref`.
+pub fn read_f(fld: &[u8], d: usize) -> Result<f64, ReadError> {
+    let mut s = [0u8; 128];
+    let mut n = 0;
+    for &c in fld {
+        if c != b' ' && c != b'\t' {
+            if n == s.len() {
+                return read_f_ref(fld, d);
+            }
+            s[n] = c;
+            n += 1;
+        }
+    }
+    let s = &s[..n];
+    if s.is_empty() {
+        return Ok(0.0);
+    }
+    let mut i = 0;
+    let mut neg = false;
+    if s[i] == b'+' || s[i] == b'-' {
+        neg = s[i] == b'-';
+        i += 1;
+    }
+    let ip0 = i;
+    while i < s.len() && s[i].is_ascii_digit() {
+        i += 1;
+    }
+    let ipart = &s[ip0..i];
+    let mut seen_point = false;
+    let mut fpart: &[u8] = &s[i..i];
+    if i < s.len() && s[i] == b'.' {
+        seen_point = true;
+        i += 1;
+        let f0 = i;
+        while i < s.len() && s[i].is_ascii_digit() {
+            i += 1;
+        }
+        fpart = &s[f0..i];
+    }
+    if ipart.is_empty() && fpart.is_empty() && !seen_point {
+        return read_f_ref(fld, d);
+    }
+    let mut expo: i64 = 0;
+    if i < s.len() {
+        let c = s[i];
+        let mut j = i;
+        let letter = matches!(c, b'e' | b'E' | b'd' | b'D' | b'q' | b'Q');
+        if letter {
+            j += 1;
+        }
+        let mut eneg = false;
+        if j < s.len() && (s[j] == b'+' || s[j] == b'-') {
+            eneg = s[j] == b'-';
+            j += 1;
+        } else if !letter {
+            return read_f_ref(fld, d);
+        }
+        if j >= s.len() || s.len() - j > 9 {
+            return read_f_ref(fld, d);
+        }
+        let mut ev: i64 = 0;
+        while j < s.len() {
+            if !s[j].is_ascii_digit() {
+                return read_f_ref(fld, d);
+            }
+            ev = ev * 10 + (s[j] - b'0') as i64;
+            j += 1;
+        }
+        expo = if eneg { -ev } else { ev };
+    }
+    if !seen_point && d > 0 {
+        expo -= d as i64;
+    }
+    // text: [-]ipart[.fpart]e<expo>, as read_f_ref builds it
+    let mut t = [0u8; 200];
+    let mut m = 0;
+    if neg {
+        t[m] = b'-';
+        m += 1;
+    }
+    if ipart.is_empty() {
+        t[m] = b'0';
+        m += 1;
+    } else {
+        t[m..m + ipart.len()].copy_from_slice(ipart);
+        m += ipart.len();
+    }
+    if !fpart.is_empty() {
+        t[m] = b'.';
+        m += 1;
+        t[m..m + fpart.len()].copy_from_slice(fpart);
+        m += fpart.len();
+    }
+    t[m] = b'e';
+    m += 1;
+    let mut ed = [0u8; 24];
+    let mut ne = 0;
+    let neg_e = expo < 0;
+    let mut u = expo.unsigned_abs();
+    loop {
+        ed[ne] = b'0' + (u % 10) as u8;
+        ne += 1;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    if neg_e {
+        t[m] = b'-';
+        m += 1;
+    }
+    for k in (0..ne).rev() {
+        t[m] = ed[k];
+        m += 1;
+    }
+    match std::str::from_utf8(&t[..m]).ok().and_then(|x| x.parse::<f64>().ok()) {
+        Some(v) => Ok(v),
+        None => read_f_ref(fld, d),
+    }
+}
+
+/// `Iw` input (blank-null).
+pub fn read_i_ref(fld: &[u8]) -> Result<i32, ReadError> {
     let s: String = fld
         .iter()
         .filter(|c| **c != b' ' && **c != b'\t')
@@ -188,7 +682,7 @@ pub fn read_i(fld: &[u8]) -> Result<i32, ReadError> {
 }
 
 /// `Fw.d` / `Ew.d` input (blank-null), for the given d.
-pub fn read_f(fld: &[u8], d: usize) -> Result<f64, ReadError> {
+pub fn read_f_ref(fld: &[u8], d: usize) -> Result<f64, ReadError> {
     let s: Vec<u8> = fld
         .iter()
         .copied()

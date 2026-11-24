@@ -28,7 +28,7 @@ pub const NBUFL: i32 = 2000;
 /// panicking here so that the same error message is produced.
 const SLACK: usize = 4096;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Reconr {
     pub nin: i32,
     pub nout: i32,
@@ -127,10 +127,53 @@ pub struct Reconr {
     pub samm: Samm,
     // saved locals of csunr1/csunr2/... are added where those are ported
     pub sv: Saved,
+    /// incremented each time `res` is filled for a material (keys caches
+    /// built from `res`)
+    pub res_gen: u64,
+    /// resxs: cross sections computed ahead by worker threads
+    pub pf: PfSlot,
+}
+
+/// Holder of the resxs prefetch; a copy of the data (for a worker) never
+/// carries it.
+#[derive(Default)]
+pub struct PfSlot(pub Option<Box<SigCache>>);
+
+impl Clone for PfSlot {
+    fn clone(&self) -> Self {
+        PfSlot(None)
+    }
+}
+
+/// Cross sections that worker threads computed ahead for `resxs`.
+///
+/// How the output stays exactly the same: `resxs` itself runs unchanged and
+/// asks `sigma_c` for each value. A value comes from this cache only if a
+/// worker computed it with the same code (`sigma`) on a copy of the same
+/// data, and the call had no side effect: it wrote nothing, did not stop,
+/// and did not read state left by an earlier call (`csr_singular`; and
+/// sections whose results could read `lrx` from an earlier call are not
+/// prefetched at all, see `pf_supported`). Anything else is computed by the
+/// main program as before. The state that `sigma` leaves behind (`lrx`,
+/// csrmat's `ri`/`si`) is made exact again before the next real call by
+/// repeating the last cached call (`stale`).
+pub struct SigCache {
+    /// the values of the current panel
+    pub map: std::collections::HashMap<u64, [f64; 6]>,
+    /// the panel whose values are in `map`
+    pub cur: Option<usize>,
+    pub ra: crate::prefetch::RunAhead<Vec<(u64, [f64; 6])>>,
+    /// energy of the last value served from the cache since the last real
+    /// call, if any
+    pub stale: Option<f64>,
+    pub nthr: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub wait: f64,
 }
 
 /// Fortran `save`d local variables and other persistent locals.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Saved {
     pub text66: Vec<u8>,
     /// lunion: `real(kr)::elim=.99e6_kr` (implicitly SAVEd)
@@ -151,6 +194,51 @@ pub struct Saved {
     pub aa_ki: i32,
     /// recout local z(17) (equivalenced with tz(17))
     pub recout_z: Vec<f64>,
+    /// csrmat: per-section lists of the resonances that each (l, J,
+    /// channel) pass uses (a speed-up only; see `CsrSect`)
+    pub csr_lists: Vec<Option<CsrSect>>,
+    /// sigma: work arrays kept between calls (zeroed on every call, as a
+    /// fresh allocation would be)
+    pub sig_siga: RM,
+    pub sig_sigp: RV,
+    pub sig_sigx: RM,
+    /// set when csrmat used `si` from an earlier call (singular matrix);
+    /// such a result cannot be computed ahead by a worker thread
+    pub csr_singular: bool,
+}
+
+/// One resonance as a csrmat pass uses it. All values are taken from `res`
+/// (`a2`, `a3` are computed exactly as the loop does), so the arithmetic
+/// that uses them is unchanged.
+#[derive(Clone, Copy)]
+pub struct CsrRes {
+    pub er: f64,
+    pub gn: f64,
+    pub gg: f64,
+    pub a2: f64,
+    pub a3: f64,
+    pub per: f64,
+    /// gfa != 0 or gfb != 0
+    pub fis: bool,
+}
+
+/// The resonances of one J value: for pass kchanl=1 and kchanl=2 the
+/// resonances that the Fortran scan does not skip, in the order of the
+/// file, and the counts kpstv/kngtv the scan would find.
+#[derive(Clone)]
+pub struct CsrJ {
+    pub lists: [Vec<CsrRes>; 2],
+    pub kpstv: i32,
+    pub kngtv: i32,
+}
+
+/// csrmat lists of one resonance section: one entry per l block (in file
+/// order), each with one `CsrJ` per J value. They depend only on `res`, so
+/// they are built again when `res` is read for a new material.
+#[derive(Clone)]
+pub struct CsrSect {
+    pub gen: u64,
+    pub ls: Vec<Vec<CsrJ>>,
 }
 
 fn txt(b: &[u8]) -> String {
@@ -461,6 +549,7 @@ impl Reconr {
                         self.mcards[i] = 0;
                     }
                     self.rdfil2(c, &mut nrtot, &mut intunr);
+                    self.res_gen += 1;
                     if self.nmtres == 0 {
                         self.nsig = 5;
                     } else {
@@ -501,7 +590,7 @@ impl Reconr {
 
                 //--compute resonance cross sections
                 if self.lrp == 1 || self.lrp == 3 {
-                    nrtot = self.resxs(c, nscr2, nscr3, nscr4, nrtot);
+                    nrtot = self.resxs(c, nscr2, nscr3, nscr4, nrtot, ngrid);
                     self.res = RV::default();
                 }
 
@@ -2510,7 +2599,7 @@ impl Reconr {
 
     /// Reconstruct the resonance cross sections on the union grid.
     /// Returns the new nrtot.
-    fn resxs(&mut self, c: &mut Ctx, ngrid: i32, nout: i32, nscr: i32, nrtot_in: i32) -> i32 {
+    fn resxs(&mut self, c: &mut Ctx, ngrid: i32, nout: i32, nscr: i32, nrtot_in: i32, ngr: i32) -> i32 {
         let half = 0.5e0f64;
         let estp = 4.1e0f64;
         let small = 1.0e-10f64;
@@ -2580,6 +2669,9 @@ impl Reconr {
             e = ffmt::e1p(elo, 10, 2)
         ));
 
+        // worker threads compute cross sections ahead (exact; see SigCache)
+        self.pf_init(c, ngrid, ngr);
+        let mut pidx = 0usize;
         let mut in_ = 0;
         let mut ig = 0;
         let mut egl;
@@ -2591,7 +2683,8 @@ impl Reconr {
                 break;
             }
         }
-        self.sigma(c, egl, &mut sigl, &mut sigd);
+        self.pf_ensure(c, 0);
+        self.sigma_c(c, egl, &mut sigl, &mut sigd);
 
         let mut i = 0i32;
         // xm and dx are plain locals that keep their last values between
@@ -2604,10 +2697,12 @@ impl Reconr {
         loop {
             match lbl {
                 105 => {
+                    self.pf_ensure(c, pidx);
+                    pidx += 1;
                     ig += 1;
                     c.finda(ig, &mut aa, 1, ngrid, &mut bufg, NBUFG);
                     eg = aa[0];
-                    self.sigma(c, eg, &mut sig, &mut sigd);
+                    self.sigma_c(c, eg, &mut sig, &mut sigd);
                     if eg >= self.eresh {
                         lbl = 190;
                         continue;
@@ -2647,7 +2742,7 @@ impl Reconr {
                     } else {
                         xm = sigfig(xm, ndig, 0);
                     }
-                    self.sigma(c, xm, &mut sig, &mut sigd);
+                    self.sigma_c(c, xm, &mut sig, &mut sigd);
                     let fr2 = (xm - x[i]) / dx;
                     let fr1 = 1.0 - fr2;
                     for j in 1..=nsig - 1 {
@@ -2722,7 +2817,7 @@ impl Reconr {
                     c.loada(in_, &res.0, nsig + 1, nscr, &mut bufr, NBUFR);
                     if self.ncoef > 1 {
                         let r1 = res[1];
-                        self.sigma(c, r1, &mut sig, &mut sigd);
+                        self.sigma_c(c, r1, &mut sig, &mut sigd);
                         for j in 1..=self.nmtres {
                             if self.mcards[j as usize] == 0 && sigd[(1, j)] > zero {
                                 self.mcards[j as usize] = in_;
@@ -2834,7 +2929,7 @@ impl Reconr {
                     c.loada(inf, &res.0, nsig + 1, nscr, &mut bufr, NBUFR);
                     if self.ncoef > 1 {
                         let r1 = res[1];
-                        self.sigma(c, r1, &mut sig, &mut sigd);
+                        self.sigma_c(c, r1, &mut sig, &mut sigd);
                         let mut k = 1;
                         resl[k] = res[1];
                         for l in 1..=self.ncoef {
@@ -2875,8 +2970,157 @@ impl Reconr {
                         ffmt::i(nrtot, 8)
                     ));
                     c.closz(-nscr);
+                    self.pf_done(c);
                     return nrtot;
                 }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // parallel prefetch for resxs (see `SigCache`)
+    // ------------------------------------------------------------------
+
+    /// True if every resonance section gives results that depend only on
+    /// the energy and the data (so a worker may compute them).
+    fn pf_supported(&self) -> bool {
+        if self.ncoef > 1 || self.nmtres > 0 || self.nsect < 1 {
+            return false;
+        }
+        for i in 1..=self.nsect as usize {
+            let nls = nint(self.res[self.ibaset[i] + 10]);
+            let ok = match self.modet[i] {
+                0 | 11 | 12 => true,
+                // csslbw/csmlbw read lrx after their l loop; with nls = 0
+                // that would be the value of an earlier call
+                1 => nls >= 1,
+                2 => self.tempr == 0.0 && nls >= 1,
+                3 => self.tempr == 0.0,
+                _ => false,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Set up the prefetch for resxs: read the grid nodes (with a buffer of
+    /// its own; resxs starts its own reading at record 1, which rewinds the
+    /// unit) and start one worker per thread, each with a copy of the data.
+    /// Panel p is the interval between nodes p and p+1.
+    fn pf_init(&mut self, c: &mut Ctx, ngrid: i32, ngr: i32) {
+        self.pf = PfSlot(None);
+        let nthr = crate::util::threads();
+        if nthr < 2 || !self.pf_supported() {
+            return;
+        }
+        let mut nodes = Vec::new();
+        let mut buf = vec![0.0f64; NBUFG as usize];
+        let mut aa = [0.0f64; 1];
+        for ig in 1..=ngr {
+            c.finda(ig, &mut aa, 1, ngrid, &mut buf, NBUFG);
+            if aa[0] >= self.eresl {
+                nodes.push(aa[0]);
+                if aa[0] >= self.eresh {
+                    break;
+                }
+            }
+        }
+        if nodes.len() < 2 {
+            return;
+        }
+        let npan = nodes.len() - 1;
+        let nodes = std::sync::Arc::new(nodes);
+        // sigma at each node, computed once by whichever worker needs it first
+        let nv: std::sync::Arc<Vec<std::sync::OnceLock<Option<[f64; 6]>>>> =
+            std::sync::Arc::new((0..nodes.len()).map(|_| std::sync::OnceLock::new()).collect());
+        let mut workers = Vec::with_capacity(nthr);
+        for _ in 0..nthr {
+            let mut wc = Ctx::new(crate::fio::Io::detached());
+            wc.thr6 = c.thr6;
+            workers.push((self.clone(), wc));
+        }
+        let ra = crate::prefetch::RunAhead::start(workers, 0, npan, 256 * nthr, move |w: &mut (Reconr, Ctx), q| {
+            let (wr, wc) = (&mut w.0, &mut w.1);
+            let mut sig = RV::new(wr.nsig.max(5) as usize + 2);
+            let mut sigd = RM::new(10, 10);
+            // upper node first: the lower one is the upper node of the panel
+            // before, which another worker is computing at the same time
+            let su = *nv[q + 1].get_or_init(|| pf_call(wr, wc, nodes[q + 1], &mut sig, &mut sigd));
+            let sl = *nv[q].get_or_init(|| pf_call(wr, wc, nodes[q], &mut sig, &mut sigd));
+            let mut out = Vec::new();
+            pf_panel(wr, wc, nodes[q], nodes[q + 1], sl, su, &mut out);
+            out
+        });
+        self.pf = PfSlot(Some(Box::new(SigCache {
+            map: Default::default(),
+            cur: None,
+            ra,
+            stale: None,
+            nthr,
+            hits: 0,
+            misses: 0,
+            wait: 0.0,
+        })));
+    }
+
+    /// Make the values of panel p (computed by the workers) the current ones.
+    fn pf_ensure(&mut self, _c: &Ctx, p: usize) {
+        if let Some(pf) = self.pf.0.as_mut() {
+            if pf.cur == Some(p) {
+                return;
+            }
+            let t0 = std::time::Instant::now();
+            pf.map.clear();
+            if let Some(v) = pf.ra.take(p) {
+                for (k, val) in v {
+                    pf.map.insert(k, val);
+                }
+            }
+            pf.cur = Some(p);
+            pf.wait += t0.elapsed().as_secs_f64();
+        }
+    }
+
+    /// `sigma`, taking the value from the prefetch cache when it is there.
+    fn sigma_c(&mut self, c: &mut Ctx, e: f64, sig: &mut RV, sigd: &mut RM) {
+        if let Some(pf) = self.pf.0.as_mut() {
+            if let Some(v) = pf.map.get(&e.to_bits()) {
+                for j in 1..=self.nsig {
+                    sig[j] = v[(j - 1) as usize];
+                }
+                // sigma's loop over the sections leaves isect = nsect
+                self.isect = self.nsect;
+                pf.stale = Some(e);
+                pf.hits += 1;
+                return;
+            }
+            pf.misses += 1;
+        }
+        self.pf_sync(c);
+        self.sigma(c, e, sig, sigd);
+    }
+
+    /// Recreate the state that the last cached call would have left (by
+    /// making that call), so the next real call sees exactly what it sees
+    /// in a run without the cache.
+    fn pf_sync(&mut self, c: &mut Ctx) {
+        let es = match self.pf.0.as_mut().and_then(|pf| pf.stale.take()) {
+            Some(es) => es,
+            None => return,
+        };
+        let mut s2 = RV::new(self.nsig.max(5) as usize + 2);
+        let mut d2 = RM::new(10, 10);
+        self.sigma(c, es, &mut s2, &mut d2);
+    }
+
+    /// End of resxs: make the state exact and drop the cache.
+    fn pf_done(&mut self, c: &mut Ctx) {
+        self.pf_sync(c);
+        if let Some(pf) = self.pf.0.take() {
+            if crate::util::pf_stats() {
+                eprintln!("reconr prefetch: {} hits, {} misses, {} threads, {:.2}s waiting", pf.hits, pf.misses, pf.nthr, pf.wait);
             }
         }
     }
@@ -2891,7 +3135,15 @@ impl Reconr {
         }
         let ncoef = self.ncoef.max(1);
         let nmt = self.nmtres.max(1);
-        let mut siga = RM::new(ncoef as usize, nmt as usize);
+        // The work arrays are kept between calls but zeroed each time, so
+        // they hold exactly what a fresh allocation would.
+        let mut siga = std::mem::take(&mut self.sv.sig_siga);
+        let nsa = ncoef as usize * nmt as usize;
+        if siga.n1 != ncoef as usize || siga.v.len() != nsa {
+            siga = RM::new(ncoef as usize, nmt as usize);
+        } else {
+            siga.v.fill(0.0);
+        }
         if self.ncoef > 1 {
             for i in 1..=self.ncoef {
                 for j in 1..=self.nmtres {
@@ -2899,8 +3151,18 @@ impl Reconr {
                 }
             }
         }
-        let mut sigp = RV::new(nsig.max(5) as usize + 1);
-        let mut sigx = RM::new(1, 1);
+        let mut sigp = std::mem::take(&mut self.sv.sig_sigp);
+        if sigp.0.len() != nsig.max(5) as usize + 1 {
+            sigp = RV::new(nsig.max(5) as usize + 1);
+        } else {
+            sigp.0.fill(0.0);
+        }
+        let mut sigx = std::mem::take(&mut self.sv.sig_sigx);
+        if sigx.n1 != 1 || sigx.v.len() != 1 {
+            sigx = RM::new(1, 1);
+        } else {
+            sigx.v.fill(0.0);
+        }
         for i in 1..=self.nsect {
             self.isect = i;
             let abn = self.abnt[i as usize];
@@ -2946,6 +3208,9 @@ impl Reconr {
                 }
             }
         }
+        self.sv.sig_siga = siga;
+        self.sv.sig_sigp = sigp;
+        self.sv.sig_sigx = sigx;
         if e < self.eresu {
             return;
         }
@@ -2957,6 +3222,168 @@ impl Reconr {
         for j in 1..=4 {
             sig[j] = sig[j] + sigu[j as usize];
         }
+    }
+}
+
+/// One `sigma` call in a worker. None if the call had a side effect (wrote
+/// something, stopped, or used state from an earlier call).
+fn pf_call(w: &mut Reconr, wc: &mut Ctx, e: f64, sig: &mut RV, sigd: &mut RM) -> Option<[f64; 6]> {
+    wc.io.touched = false;
+    w.sv.csr_singular = false;
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w.sigma(wc, e, sig, sigd)));
+    if r.is_err() || wc.io.touched || w.sv.csr_singular {
+        return None;
+    }
+    let mut v = [0.0f64; 6];
+    for j in 1..=w.nsig {
+        v[(j - 1) as usize] = sig[j];
+    }
+    Some(v)
+}
+
+/// Refine one resxs panel [egl, eg] in a worker, the way resxs does (labels
+/// 115, 150 and 175), and keep every cross section computed. The one input
+/// a worker cannot know is the last point accepted before the panel (used
+/// by the step-size test); it is taken as unknown, so that test is not
+/// applied until the first point of the panel is accepted. If resxs then
+/// asks for other energies, they are computed by the main program.
+fn pf_panel(
+    w: &mut Reconr,
+    wc: &mut Ctx,
+    egl: f64,
+    eg: f64,
+    sl: Option<[f64; 6]>,
+    su: Option<[f64; 6]>,
+    out: &mut Vec<(u64, [f64; 6])>,
+) {
+    let half = 0.5e0f64;
+    let estp = 4.1e0f64;
+    let small = 1.0e-10f64;
+    let one = 1.0f64;
+    let trange = 0.4999e0f64;
+    let tenth = 0.1e0f64;
+    const NDIM: usize = 30;
+    let nsig = w.nsig as usize;
+    let mut sig = RV::new(nsig.max(5) + 2);
+    let mut sigd = RM::new(10, 10);
+    if let Some(v) = sl {
+        out.push((egl.to_bits(), v));
+    }
+    if let Some(v) = su {
+        out.push((eg.to_bits(), v));
+    }
+    let (sl, su) = match (sl, su) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return,
+    };
+    if eg >= w.eresh {
+        return;
+    }
+    // vals[i][k-1] = sig(k) at x[i]; so y(i) = vals[i][0], sigs(j,i) = vals[i][j]
+    let mut x = [0.0f64; NDIM + 2];
+    let mut vals = [[0.0f64; 6]; NDIM + 2];
+    x[2] = egl;
+    vals[2] = sl;
+    x[1] = eg;
+    vals[1] = su;
+    if (x[2] < w.eresr && x[1] > w.eresr) || (x[2] < w.eresu && x[1] > w.eresu) || (x[2] < w.eresm && x[1] > w.eresm) {
+        return;
+    }
+    let mut i = 2usize;
+    let mut res1: Option<f64> = None;
+    let mut dm = [0.0f64; 6];
+    loop {
+        // 115
+        let mut xm = half * (x[i] + x[i - 1]);
+        let dx = x[i - 1] - x[i];
+        let mut ndig = 9;
+        if xm > tenth && xm < one {
+            ndig = 8;
+        }
+        let mut accept = true;
+        let mut sv = [0.0f64; 6];
+        if xm > sigfig(x[i], ndig, 1) && xm < sigfig(x[i - 1], ndig, -1) {
+            if xm > sigfig(x[i], 7, 1) && xm < sigfig(x[i - 1], 7, -1) {
+                xm = sigfig(xm, 7, 0);
+            } else {
+                xm = sigfig(xm, ndig, 0);
+            }
+            sv = match pf_call(w, wc, xm, &mut sig, &mut sigd) {
+                Some(v) => v,
+                None => return,
+            };
+            out.push((xm.to_bits(), sv));
+            let fr2 = (xm - x[i]) / dx;
+            let fr1 = 1.0 - fr2;
+            for j in 1..nsig {
+                let sl = fr1 * vals[i][j] + fr2 * vals[i - 1][j];
+                dm[j] = (sv[j] - sl).abs();
+            }
+            let mut errn = w.err;
+            if x[i - 1] < trange {
+                errn = w.err / 5.0;
+            }
+            let mut errm = w.errmax;
+            if x[i - 1] < trange {
+                errm = w.errmax / 5.0;
+            }
+            let mut no = 0;
+            for j in 1..nsig {
+                if dm[j] > errn * sv[j] {
+                    no = 1;
+                }
+            }
+            if no == 0 {
+                if let Some(r1) = res1 {
+                    let est = estp * (x[i] - r1);
+                    if dx > est && xm < w.eresr {
+                        accept = false;
+                    }
+                }
+            } else {
+                let mut go175 = false;
+                for j in 1..nsig {
+                    if dm[j] > errm * sv[j] {
+                        go175 = true;
+                        break;
+                    }
+                }
+                if !go175 {
+                    let tsti = 2.0 * w.errint * xm / dx;
+                    for j in 1..nsig {
+                        if dm[j] >= tsti {
+                            go175 = true;
+                            break;
+                        }
+                    }
+                }
+                if go175 {
+                    accept = false;
+                }
+            }
+        }
+        if accept {
+            // 150
+            let mut r1 = x[i];
+            if (egl - x[i]).abs() <= small * egl {
+                r1 = egl;
+            }
+            res1 = Some(r1);
+            i -= 1;
+            if i > 1 {
+                continue;
+            }
+            return;
+        }
+        // 175
+        i += 1;
+        if i > NDIM {
+            return;
+        }
+        x[i] = x[i - 1];
+        vals[i] = vals[i - 1];
+        x[i - 1] = xm;
+        vals[i - 1] = sv;
     }
 }
 
@@ -3498,6 +3925,93 @@ impl Reconr {
         sigp[1] = sigp[2] + sigp[3] + sigp[4];
     }
 
+    /// Build the csrmat resonance lists of the current section. This walks
+    /// `res` exactly as csrmat does (same l blocks, same J values from the
+    /// same floating-point steps, same match and skip tests), but keeps
+    /// only what does not depend on the energy.
+    fn csr_build(&self) -> CsrSect {
+        let haf = 0.5e0f64;
+        let quar = 0.25e0f64;
+        let zero = 0.0f64;
+        let mut inow = self.ibaset[self.isect as usize];
+        let spi = self.res[inow + 6];
+        let nls = nint(self.res[inow + 10]);
+        inow += 12;
+        let mut ls = Vec::new();
+        for _l in 1..=nls {
+            let inowb = inow;
+            let ll = nint(self.res[inow + 2]);
+            let nrs = nint(self.res[inow + 5]);
+            if nrs == 0 {
+                ls.push(Vec::new());
+                inow += 6;
+                continue;
+            }
+            let ncyc = nint(self.res[inow + 4]) / nrs;
+            let fl = ll as f64;
+            let ajmin = ((spi - fl).abs() - haf).abs();
+            let ajmax = spi + fl + haf;
+            let numj = nint(ajmax - ajmin + 1.0);
+            let mut ajc = ajmin - 1.0;
+            let mut js = Vec::new();
+            for _jj in 1..=numj {
+                ajc = ajc + 1.0;
+                let mut cj = CsrJ { lists: [Vec::new(), Vec::new()], kpstv: 0, kngtv: 0 };
+                let mut ir = inowb + 6;
+                let mut ip = inowb + 6 + nrs * 6;
+                for _i in 1..=nrs {
+                    let aj = self.res[ir + 1].abs();
+                    if (aj - ajc).abs() <= quar {
+                        if self.res[ir + 1] < zero {
+                            cj.kngtv += 1;
+                        }
+                        if self.res[ir + 1] > zero {
+                            cj.kpstv += 1;
+                        }
+                        let gfa = self.res[ir + 4];
+                        let gfb = self.res[ir + 5];
+                        let mut a2 = 0.0;
+                        if gfa != zero {
+                            a2 = sqrt(gfa.abs());
+                        }
+                        if gfa < zero {
+                            a2 = -a2;
+                        }
+                        let mut a3 = 0.0;
+                        if gfb != zero {
+                            a3 = sqrt(gfb.abs());
+                        }
+                        if gfb < zero {
+                            a3 = -a3;
+                        }
+                        let r = CsrRes {
+                            er: self.res[ir],
+                            gn: self.res[ir + 2],
+                            gg: self.res[ir + 3],
+                            a2,
+                            a3,
+                            per: self.res[ip + 1],
+                            fis: gfa != zero || gfb != zero,
+                        };
+                        // pass 1 skips aj < 0, pass 2 skips aj > 0
+                        if !(self.res[ir + 1] < zero) {
+                            cj.lists[0].push(r);
+                        }
+                        if !(self.res[ir + 1] > zero) {
+                            cj.lists[1].push(r);
+                        }
+                    }
+                    ir += ncyc;
+                    ip += 6;
+                }
+                js.push(cj);
+            }
+            ls.push(js);
+            inow = inowb + 6 + 12 * nrs;
+        }
+        CsrSect { gen: self.res_gen, ls }
+    }
+
     fn csrmat(&mut self, c: &mut Ctx, e: f64, sigp: &mut RV) {
         let pi = crate::util::physics::PI;
         let rc1 = 0.123e0f64;
@@ -3537,14 +4051,20 @@ impl Reconr {
         let pifac = pi / (k * k);
         let mut rho;
         let mut rhoc;
-        let mut gfa;
-        let mut gfb;
         let mut gf = 0.0f64;
         inow += 12;
         let mut r = [[0.0f64; 4]; 4];
         let mut s = [[0.0f64; 4]; 4];
         let mut ri = std::mem::take(&mut self.sv.csr_ri);
         let mut si = std::mem::take(&mut self.sv.csr_si);
+        let isx = self.isect as usize;
+        if self.sv.csr_lists.len() <= isx {
+            self.sv.csr_lists.resize_with(isx + 1, || None);
+        }
+        let lists = match self.sv.csr_lists[isx].take() {
+            Some(l) if l.gen == self.res_gen => l,
+            _ => self.csr_build(),
+        };
         let mut in_ = inow;
 
         for _l in 1..=nls {
@@ -3557,7 +4077,6 @@ impl Reconr {
                 inow += 6;
                 continue;
             }
-            let ncyc = nint(self.res[inow + 4]) / nrs;
             let apl = self.res[inow + 1];
             rhoc = k * ap;
             rho = k * ra;
@@ -3596,46 +4115,23 @@ impl Reconr {
                             r[j][i] = 0.0;
                         }
                     }
-                    inow += 6;
-                    in_ = inow + nrs * 6;
-                    for _i in 1..=nrs {
-                        let aj = self.res[inow + 1].abs();
-                        if (aj - ajc).abs() <= quar {
-                            if self.res[inow + 1] < zero {
-                                kngtv += 1;
-                            }
-                            if self.res[inow + 1] > zero {
-                                kpstv += 1;
-                            }
-                            let mut iskip = 0;
-                            if kchanl == 1 && self.res[inow + 1] < zero {
-                                iskip = 1;
-                            }
-                            if kchanl == 2 && self.res[inow + 1] > zero {
-                                iskip = 1;
-                            }
-                            if iskip == 0 {
-                                let er = self.res[inow];
-                                let gn = self.res[inow + 2];
-                                let gg = self.res[inow + 3];
-                                gfa = self.res[inow + 4];
-                                gfb = self.res[inow + 5];
-                                let per = self.res[in_ + 1];
+                    in_ = inowb + 6 + nrs * 6 + nrs * 6;
+                    // The Fortran scans all nrs resonances here and skips
+                    // those of other J values or of the other channel sign.
+                    // The list holds the ones it does not skip, in the same
+                    // order, so the sums below are the same.
+                    let cj = &lists.ls[(_l - 1) as usize][(jj - 1) as usize];
+                    kpstv += cj.kpstv;
+                    kngtv += cj.kngtv;
+                    for rr in cj.lists[(kchanl - 1) as usize].iter() {
+                        {
+                                let er = rr.er;
+                                let gn = rr.gn;
+                                let gg = rr.gg;
+                                let per = rr.per;
                                 let a1 = sqrt(gn * pe / per);
-                                let mut a2 = 0.0;
-                                if gfa != zero {
-                                    a2 = sqrt(gfa.abs());
-                                }
-                                if gfa < zero {
-                                    a2 = -a2;
-                                }
-                                let mut a3 = 0.0;
-                                if gfb != zero {
-                                    a3 = sqrt(gfb.abs());
-                                }
-                                if gfb < zero {
-                                    a3 = -a3;
-                                }
+                                let a2 = rr.a2;
+                                let a3 = rr.a3;
                                 let diff = er - e;
                                 let den = diff * diff + quar * gg * gg;
                                 if den == 0.0 {
@@ -3651,7 +4147,7 @@ impl Reconr {
                                 let gg4 = quar * gg / den;
                                 r[1][1] = r[1][1] + gg4 * a1 * a1;
                                 s[1][1] = s[1][1] - de2 * a1 * a1;
-                                if gfa != zero || gfb != zero {
+                                if rr.fis {
                                     r[1][2] = r[1][2] + gg4 * a1 * a2;
                                     s[1][2] = s[1][2] - de2 * a1 * a2;
                                     r[1][3] = r[1][3] + gg4 * a1 * a3;
@@ -3664,10 +4160,7 @@ impl Reconr {
                                     s[2][3] = s[2][3] - de2 * a2 * a3;
                                     gf = 1.0;
                                 }
-                            }
                         }
-                        inow += ncyc;
-                        in_ += 6;
                     }
 
                     let mut kk = 0;
@@ -3708,7 +4201,9 @@ impl Reconr {
                             s[3][1] = s[1][3];
                             r[3][2] = r[2][3];
                             s[3][2] = s[2][3];
-                            frobns(&mut r, &s, &mut ri, &mut si);
+                            if frobns(&mut r, &s, &mut ri, &mut si) == 1 {
+                                self.sv.csr_singular = true;
+                            }
                             let t1 = ri[1][2];
                             let t2 = si[1][2];
                             let t3 = ri[1][3];
@@ -3761,6 +4256,7 @@ impl Reconr {
         sigp[4] = pifac * sigp[4];
         self.sv.csr_ri = ri;
         self.sv.csr_si = si;
+        self.sv.csr_lists[isx] = Some(lists);
     }
 
     fn cshybr(&mut self, c: &mut Ctx, e: f64, sigp: &mut RV) {
@@ -4761,7 +5257,9 @@ pub fn gnrl(galpha: f64, gbeta: f64, gamma: f64, mu: i32, nu: i32, lamda: i32, d
 }
 
 /// 3x3 complex matrix inversion (Frobenius-Schur): (a + i b)^-1 = c + i d.
-pub fn frobns(a: &mut [[f64; 4]; 4], b: &[[f64; 4]; 4], c: &mut [[f64; 4]; 4], d: &mut [[f64; 4]; 4]) {
+/// Returns 1 if the first inversion failed: `d` is then left as it was,
+/// so the result depends on the previous call (see `Saved::csr_singular`).
+pub fn frobns(a: &mut [[f64; 4]; 4], b: &[[f64; 4]; 4], c: &mut [[f64; 4]; 4], d: &mut [[f64; 4]; 4]) -> i32 {
     let mut q = [[0.0f64; 4]; 4];
     for i in 1..=3 {
         for j in 1..=3 {
@@ -4770,6 +5268,7 @@ pub fn frobns(a: &mut [[f64; 4]; 4], b: &[[f64; 4]; 4], c: &mut [[f64; 4]; 4], d
     }
     let mut ind = 0;
     thrinv(a, 3, &mut ind);
+    let first = ind;
     if ind != 1 {
         abcmat(a, b, &mut q);
         abcmat(b, &q, d);
@@ -4786,6 +5285,7 @@ pub fn frobns(a: &mut [[f64; 4]; 4], b: &[[f64; 4]; 4], c: &mut [[f64; 4]; 4], d
             }
         }
     }
+    first
 }
 
 pub fn thrinv(d: &mut [[f64; 4]; 4], n: usize, kimerr: &mut i32) {

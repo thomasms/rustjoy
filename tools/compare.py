@@ -16,6 +16,9 @@ The only bytes that are masked before comparison are:
     they differ even between two runs of the Fortran program itself.
 
 Usage: compare.py FORTRAN_NJOY RUST_BIN CORPUS_DIR WORK_DIR [case ...]
+
+COMPARE_SETUP=program runs pre.input with that program instead of the first
+one (used to compare two runs of the port, see run_all.sh).
 """
 import filecmp
 import json
@@ -146,7 +149,10 @@ def compare_case(fortran, rust, case_dir, work, timeout):
     shutil.copytree(os.path.join(case_dir, "tapes"), pre)
     shutil.copy(os.path.join(case_dir, "pre.input"), pre)
     shutil.copy(os.path.join(case_dir, "run.input"), pre)
-    rc, _, _, _ = run(fortran, pre, "pre.input", timeout)
+    # the modules before the call run with the Fortran program (or with
+    # COMPARE_SETUP, when the first program is not the Fortran one)
+    setup = os.environ.get("COMPARE_SETUP", fortran)
+    rc, _, _, _ = run(setup, pre, "pre.input", timeout)
     if rc != 0:
         return {"case": name, "status": "setup-failed"}
     # keep the moder listing, but not under the name the RECONR run writes

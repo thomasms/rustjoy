@@ -64,10 +64,10 @@ struct GetySave {
 #[inline]
 fn hrec_fields(line: &[u8]) -> (i32, i32, i32, i32) {
     // '(i4,i2,i3,i5)' starting at column 67
-    let math = rd_i(&ffmt::field(line, 66, 4));
-    let mfh = rd_i(&ffmt::field(line, 70, 2));
-    let mth = rd_i(&ffmt::field(line, 72, 3));
-    let nsp = rd_i(&ffmt::field(line, 75, 5));
+    let math = rd_i(&ffmt::fieldx(line, 66, 4));
+    let mfh = rd_i(&ffmt::fieldx(line, 70, 2));
+    let mth = rd_i(&ffmt::fieldx(line, 72, 3));
+    let nsp = rd_i(&ffmt::fieldx(line, 75, 5));
     (math, mfh, mth, nsp)
 }
 
@@ -311,7 +311,7 @@ impl Ctx {
         } else if nin > 0 {
             let line = self.io.read_line(nin);
             for i in 0..6 {
-                a[i as i32 + 1] = rd_e(&ffmt::field(&line, 11 * i, 11));
+                a[i as i32 + 1] = rd_e(&ffmt::fieldx(&line, 11 * i, 11));
             }
             let (m1, m2, m3, ns) = hrec_fields(&line);
             self.math = m1;
@@ -929,7 +929,7 @@ impl Ctx {
             for _ in 1..=nx {
                 let line = self.io.read_line(nin);
                 for i in 0..6 {
-                    a[k + i + 1] = rd_e(&ffmt::field(&line, 11 * i as usize, 11));
+                    a[k + i + 1] = rd_e(&ffmt::fieldx(&line, 11 * i as usize, 11));
                 }
                 let (m1, m2, m3, ns) = hrec_fields(&line);
                 self.math = m1;
@@ -999,7 +999,7 @@ impl Ctx {
         if nin > 0 {
             let line = self.io.read_line(nin);
             for i in 0..6 {
-                self.ah[i] = rd_e(&ffmt::field(&line, 11 * i, 11));
+                self.ah[i] = rd_e(&ffmt::fieldx(&line, 11 * i, 11));
             }
             let (m1, m2, m3, ns) = hrec_fields(&line);
             self.math = m1;
@@ -1053,8 +1053,8 @@ impl Ctx {
                 let line = self.io.read_line(nin);
                 let mut c = 0usize;
                 for j in i..=ip2 {
-                    let v1 = rd_i(&ffmt::field(&line, 11 * c, 11));
-                    let v2 = rd_i(&ffmt::field(&line, 11 * (c + 1), 11));
+                    let v1 = rd_i(&ffmt::fieldx(&line, 11 * c, 11));
+                    let v2 = rd_i(&ffmt::fieldx(&line, 11 * (c + 1), 11));
                     if (j as usize) < self.nbt.len() {
                         self.nbt[j as usize] = v1;
                         self.jnt[j as usize] = v2;

@@ -6,6 +6,7 @@ pub mod ffmt;
 pub mod fio;
 pub mod fmath;
 pub mod mathm;
+pub mod prefetch;
 pub mod reconr;
 pub mod samm;
 pub mod util;

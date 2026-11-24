@@ -59,7 +59,23 @@ echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
 
+echo "== the parallel prefetch: 1 thread against the default ($(nproc) CPUs), byte for byte"
+# compare.py runs its first program in the role of the reference; here that
+# is the port with NJOY_THREADS=1 (no worker threads at all). The modules
+# before each call still run with the Fortran program (COMPARE_SETUP).
+printf '#!/bin/sh\nNJOY_THREADS=1 exec "%s"\n' "$RUST" > "$W/rust-1thread"
+chmod +x "$W/rust-1thread"
+echo "   reconr:"
+COMPARE_SETUP="$W/njoy-ref/njoy" python3 "$R/tools/compare.py" "$W/rust-1thread" "$RUST" "$C" "$W/threads" | tail -1
+echo "   broadr:"
+COMPARE_SETUP="$W/njoy-ref/njoy" python3 "$R/tools/compare.py" "$W/rust-1thread" "$RUST" "$CB" "$W/threads-broadr" | tail -1
+echo "   broadr variants:"
+COMPARE_SETUP="$W/njoy-ref/njoy" python3 "$R/tools/compare.py" "$W/rust-1thread" "$RUST" "$CV" "$W/threads-broadr-var" | tail -1
+
 echo "== numeric kernels"
+echo "   allocation-free formatting and reading against the previous code:"
+(cd "$R" && CARGO_TARGET_DIR="$W/target" cargo build --release -q --example ffmt_check)
+"$W/target/release/examples/ffmt_check" | sed 's/^/   /'
 mkdir -p "$W/num"
 (cd "$W/num" && gfortran -O0 -o numcheck "$N/src/locale.f90" "$N/src/mainio.f90" \
    "$N/src/util.f90" "$N/src/endf.f90" "$R/tools/numcheck.f90")

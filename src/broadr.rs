@@ -21,6 +21,7 @@ const NSTACK: usize = 12;
 /// Module variables of `broadm`, plus the `SAVE`d locals of `broadn`.
 /// They keep their values between calls and between `broadr` runs in one
 /// deck, as in the Fortran.
+#[derive(Clone)]
 pub struct Broadr {
     nunr: i32,
     intunr: i32,
@@ -72,6 +73,40 @@ pub struct Broadr {
     // thinb's tt is a plain local that is read before it is set on every
     // page after the first (undefined in the Fortran); it is kept here.
     th_tt: RV,
+    /// broadn: bsigma values computed ahead by worker threads (see BsCache)
+    bpf: BpfSlot,
+}
+
+/// Holder of the broadn prefetch; a copy of the data (for a worker) never
+/// carries it.
+#[derive(Default)]
+struct BpfSlot(Option<Box<BsCache>>);
+
+impl Clone for BpfSlot {
+    fn clone(&self) -> Self {
+        BpfSlot(None)
+    }
+}
+
+/// bsigma values that worker threads computed ahead for one broadn call.
+///
+/// bsigma's result depends only on its arguments (kn, en), the page data
+/// (e, s) and the page bounds; it sets every work variable it reads. Its
+/// one side effect is the "broadening truncated" message, which depends
+/// only on aamin; a value taken from here repeats that message. broadn
+/// itself runs unchanged and asks `bsigma_c` for each value, so a value
+/// that a worker did not compute is computed by the main program as
+/// before. The output is the same with any number of threads.
+struct BsCache {
+    /// the values of the current panel: (kn, en bits) -> nreac values, aamin
+    map: std::collections::HashMap<(i32, u64), Vec<f64>>,
+    /// the panel whose values are in `map`
+    cur: Option<usize>,
+    ra: crate::prefetch::RunAhead<Vec<(i32, u64, Vec<f64>)>>,
+    nthr: usize,
+    hits: u64,
+    misses: u64,
+    wait: f64,
 }
 
 impl Default for Broadr {
@@ -129,6 +164,7 @@ impl Broadr {
             bn_sn: RV::new(NTT),
             bn_dl: RV::new(NTT),
             th_tt: RV::new(NTT + 1),
+            bpf: BpfSlot(None),
         }
     }
 
@@ -1625,6 +1661,11 @@ impl Broadr {
             lbl = 120;
         }
         is = 2;
+        // worker threads compute bsigma values ahead (exact; see BsCache)
+        if !(lbl == 110 && self.bn_es[1] > self.thnmax) {
+            self.bpf_init(e, s, k, klast);
+        }
+        let mut pidx = 0usize;
         loop {
             match lbl {
                 110 => {
@@ -1681,7 +1722,9 @@ impl Broadr {
                     self.bn_es[1] = sigfig(et, 7, 0);
                     let xt = sqrt(alpha * self.bn_es[1]);
                     let mut sn1 = RV::new(NTT);
-                    self.bsigma(c, k, xt, &mut sn1, e, s);
+                    pidx += 1;
+                    self.bpf_ensure(pidx, e, s);
+                    self.bsigma_c(c, k, xt, &mut sn1, e, s);
                     for i in 1..=nreac {
                         self.bn_ss[(i, 1)] = sn1[i];
                     }
@@ -1732,7 +1775,7 @@ impl Broadr {
                     }
                     let xm = sqrt(alpha * em);
                     let mut sn = std::mem::take(&mut self.bn_sn);
-                    self.bsigma(c, klast, xm, &mut sn, e, s);
+                    self.bsigma_c(c, klast, xm, &mut sn, e, s);
                     self.bn_sn = sn;
                     let dx = self.bn_es[is - 1] - self.bn_es[is];
                     let f = (em - self.bn_es[is]) / dx;
@@ -1820,6 +1863,7 @@ impl Broadr {
                         // 180: finished with this page.
                         self.bn_ks[2] = self.nlow - 1;
                         if self.nhigh < self.khigh {
+                            self.bpf_done();
                             return;
                         }
                         lbl = 190;
@@ -1874,6 +1918,7 @@ impl Broadr {
                         }
                     }
                     self.bn_ks[2] = self.nlow - 1;
+                    self.bpf_done();
                     return;
                 }
                 _ => unreachable!(),
@@ -1883,6 +1928,13 @@ impl Broadr {
 
     // ================================================================ bsigma
     fn bsigma(&mut self, c: &mut Ctx, kn: i32, en: f64, sn: &mut RV, e: &RV, s: &RM) {
+        let aamin = self.bsigma_core(kn, en, sn, e, s);
+        bsigma_mess(c, aamin);
+    }
+
+    /// bsigma without its message; returns aamin (the message is printed
+    /// when aamin < atop).
+    fn bsigma_core(&mut self, kn: i32, en: f64, sn: &mut RV, e: &RV, s: &RM) -> f64 {
         let one = 1.0e0f64;
         let two = 2.0e0f64;
         let atop = 4.0e0f64;
@@ -2052,10 +2104,348 @@ impl Broadr {
             sn[i] = sbt[i as usize];
         }
 
-        //--print truncation warning
-        if aamin < atop {
-            let strng = format!("broadening truncated at a={}", ffmt::f(aamin, 3, 1));
-            c.mess("bsigma", &strng, " ");
+        aamin
+    }
+
+    /// bsigma, taking the value from the prefetch cache when it is there.
+    fn bsigma_c(&mut self, c: &mut Ctx, kn: i32, en: f64, sn: &mut RV, e: &RV, s: &RM) {
+        if let Some(pf) = self.bpf.0.as_mut() {
+            if let Some(v) = pf.map.get(&(kn, en.to_bits())) {
+                let nreac = self.nreac as usize;
+                for i in 1..=nreac {
+                    sn[i as i32] = v[i - 1];
+                }
+                let aamin = v[nreac];
+                pf.hits += 1;
+                bsigma_mess(c, aamin);
+                return;
+            }
+            pf.misses += 1;
+        }
+        self.bsigma(c, kn, en, sn, e, s);
+    }
+
+    /// The stack nodes that broadn's loop will use, found by the same walk
+    /// (label 120 and the end of label 150), which does not depend on any
+    /// bsigma value. Node 0 is the lower node already on the stack.
+    fn bpf_nodes(&self, e: &RV, s: &RM, k0: i32, klast0: i32) -> (Vec<(i32, f64)>, Vec<i32>) {
+        let therm = 0.0253e0f64;
+        let small = 1.0e-9f64;
+        let step = 2.01e0f64;
+        let zero = 0.0f64;
+        let nmax = 10;
+        let nreac = self.nreac;
+        let alpha = self.alpha;
+        let mut nodes = vec![(self.bn_ks[2], self.bn_es[2])];
+        let mut klasts = vec![0];
+        let mut dl = self.bn_dl.clone();
+        let mut es2 = self.bn_es[2];
+        let mut k = k0;
+        let mut klast = klast0;
+        // highest k whose e(k), s(:,k+1) exist (the walk never needs more
+        // than broadn reads; this only keeps it from failing where broadn
+        // would not go)
+        let kmax = (e.len()).min((s.v.len() / s.n1.max(1)) as i32 - 1);
+        loop {
+            // 120
+            let et;
+            loop {
+                if k < 1 || k > kmax {
+                    return (Vec::new(), Vec::new());
+                }
+                let t = powi(e[k], 2) / alpha;
+                let mut go130 = false;
+                if t >= self.thnmax || k >= self.nhigh {
+                    go130 = true;
+                } else {
+                    let test = sigfig(t, 7, 0);
+                    if (es2 - test).abs() < small * test {
+                        k += 1;
+                        continue;
+                    }
+                    if k > klast + nmax || t > step * es2 {
+                        go130 = true;
+                    } else {
+                        let test = sigfig(t, 3, 0);
+                        if (t - test).abs() < small * test || (t - therm).abs() < small * therm {
+                            go130 = true;
+                        } else {
+                            for i in 1..=nreac {
+                                let mut dn = s[(i, k + 1)] - s[(i, k)];
+                                if dn.abs() < s[(i, k)].abs() / 1000.0 {
+                                    dn = 0.0;
+                                }
+                                if dn >= zero {
+                                    dn = 1.0;
+                                } else {
+                                    dn = -1.0;
+                                }
+                                if dn != dl[i] {
+                                    go130 = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if go130 {
+                    et = t;
+                    break;
+                }
+                k += 1;
+            }
+            // 130
+            let es1 = sigfig(et, 7, 0);
+            nodes.push((k, es1));
+            klasts.push(klast);
+            // 150, stack exhausted
+            es2 = es1;
+            for i in 1..=nreac {
+                let mut dn = s[(i, k + 1)] - s[(i, k)];
+                if dn.abs() < s[(i, k)].abs() / 1000.0 {
+                    dn = 0.0;
+                }
+                dl[i] = if dn >= zero { 1.0 } else { -1.0 };
+            }
+            if k >= self.nhigh || es1 > self.thnmax {
+                break;
+            }
+            klast = k;
+            k += 1;
+        }
+        (nodes, klasts)
+    }
+
+    /// Set up the prefetch for the broadn loop that starts with node k,
+    /// klast (the stack already holds the lower node). Panel p (from 1) is
+    /// the interval between nodes p-1 and p.
+    fn bpf_init(&mut self, e: &RV, s: &RM, k: i32, klast: i32) {
+        self.bpf = BpfSlot(None);
+        let nthr = crate::util::threads();
+        if nthr < 2 {
+            return;
+        }
+        let (nodes, klasts) = self.bpf_nodes(e, s, k, klast);
+        if nodes.len() < 3 {
+            return;
+        }
+        let nreac = self.nreac as usize;
+        let alpha = self.alpha;
+        let errthn = self.errthn;
+        // node 0 is on the stack already
+        let node0: (Vec<f64>, i32) = ((1..=nreac as i32).map(|i| self.bn_ss[(i, 2)]).collect(), self.bn_js[2]);
+        let npan = nodes.len();
+        let nodes = std::sync::Arc::new(nodes);
+        let klasts = std::sync::Arc::new(klasts);
+        let es = std::sync::Arc::new(e.clone());
+        let ss = std::sync::Arc::new(s.clone());
+        // bsigma at each node (values, aamin) and js, computed once
+        type NodeVal = (Vec<f64>, f64, i32);
+        let nv: std::sync::Arc<Vec<std::sync::OnceLock<NodeVal>>> =
+            std::sync::Arc::new((0..npan).map(|_| std::sync::OnceLock::new()).collect());
+        let mut workers = Vec::with_capacity(nthr);
+        for _ in 0..nthr {
+            workers.push(self.clone());
+        }
+        let ra = crate::prefetch::RunAhead::start(workers, 1, npan, 256 * nthr, move |w: &mut Broadr, q| {
+            let (e, s) = (&*es, &*ss);
+            let node = |w: &mut Broadr, idx: usize| -> NodeVal {
+                let (k, ek) = nodes[idx];
+                let xt = sqrt(alpha * ek);
+                let mut sn = RV::new(NTT);
+                let aamin = w.bsigma_core(k, xt, &mut sn, e, s);
+                let v: Vec<f64> = (1..=nreac).map(|i| sn[i as i32]).collect();
+                let mut js = 0;
+                for i in 1..=nreac {
+                    if (v[i - 1] - s[(i as i32, k)]).abs() > errthn * s[(i as i32, k)] {
+                        js = 1;
+                    }
+                }
+                (v, aamin, js)
+            };
+            // upper node first: the lower one is the upper node of the panel
+            // before, which another worker is computing at the same time
+            let up = nv[q].get_or_init(|| node(w, q)).clone();
+            let lo = if q == 1 { (node0.0.clone(), 0.0, node0.1) } else { nv[q - 1].get_or_init(|| node(w, q - 1)).clone() };
+            let mut out = Vec::new();
+            let (k, ek) = nodes[q];
+            let mut uv = up.0.clone();
+            uv.push(up.1);
+            out.push((k, sqrt(alpha * ek).to_bits(), uv));
+            w.bpf_panel(nodes[q - 1], &(lo.0, lo.2), nodes[q], &(up.0, up.2), klasts[q], e, s, &mut out);
+            out
+        });
+        self.bpf = BpfSlot(Some(Box::new(BsCache { map: Default::default(), cur: None, ra, nthr, hits: 0, misses: 0, wait: 0.0 })));
+    }
+
+    /// Make the values of panel p (computed by the workers) the current ones.
+    fn bpf_ensure(&mut self, p: usize, _e: &RV, _s: &RM) {
+        if let Some(pf) = self.bpf.0.as_mut() {
+            if pf.cur == Some(p) {
+                return;
+            }
+            let t0 = std::time::Instant::now();
+            pf.map.clear();
+            if let Some(v) = pf.ra.take(p) {
+                for (kn, bits, vals) in v {
+                    pf.map.insert((kn, bits), vals);
+                }
+            }
+            pf.cur = Some(p);
+            pf.wait += t0.elapsed().as_secs_f64();
+        }
+    }
+
+    /// Refine one panel the way broadn does (labels 140, 150, 170) and keep
+    /// every bsigma value computed. The last stored point before the panel
+    /// (bn_tt(1)) is not known here, so the step-size test is not applied
+    /// until the first point of the panel is stored, and j > 3 is assumed.
+    #[allow(clippy::too_many_arguments)]
+    fn bpf_panel(
+        &mut self,
+        lo: (i32, f64),
+        lov: &(Vec<f64>, i32),
+        up: (i32, f64),
+        upv: &(Vec<f64>, i32),
+        klast: i32,
+        e: &RV,
+        s: &RM,
+        out: &mut Vec<(i32, u64, Vec<f64>)>,
+    ) {
+        let one = 1.0e0f64;
+        let estp = 4.1e0f64;
+        let half = 0.5e0f64;
+        let rmax = 3.0e0f64;
+        let errmin = 1.0e-15f64;
+        let trange = 0.4999e0f64;
+        let ssmall = 1.0e-6f64;
+        let tenth = 1.0e-1f64;
+        let zero = 0.0f64;
+        let nreac = self.nreac as usize;
+        let alpha = self.alpha;
+        let mut es = [0.0f64; NSTACK + 1];
+        let mut ks = [0i32; NSTACK + 1];
+        let mut js = [0i32; NSTACK + 1];
+        let mut ss = vec![0.0f64; (NSTACK + 1) * nreac];
+        es[2] = lo.1;
+        ks[2] = lo.0;
+        js[2] = lov.1;
+        ss[2 * nreac..3 * nreac].copy_from_slice(&lov.0);
+        es[1] = up.1;
+        ks[1] = up.0;
+        js[1] = upv.1;
+        ss[nreac..2 * nreac].copy_from_slice(&upv.0);
+        let mut sn = RV::new(NTT);
+        let mut tt1: Option<f64> = None;
+        let mut is = 2usize;
+        loop {
+            // 140
+            let mut go150 = true;
+            let mut em = 0.0;
+            if is < NSTACK && !(ks[is - 1] == ks[is] + 1 && js[is - 1] == 0 && js[is] == 0) {
+                em = half * (es[is - 1] + es[is]);
+                let mut ndig = 9;
+                if em > tenth && em < one {
+                    ndig = 8;
+                }
+                if em > sigfig(es[is], 7, 1) {
+                    if em < sigfig(es[is - 1], 7, -1) {
+                        em = sigfig(em, 7, 0);
+                    }
+                } else {
+                    em = sigfig(em, ndig, 0);
+                }
+                if !(em < sigfig(es[is], ndig, 1) || em > sigfig(es[is - 1], ndig, -1)) {
+                    let mut errt = self.errthn;
+                    if es[is - 1] < trange {
+                        errt = errt / 5.0;
+                    }
+                    let mut errm = self.errmax;
+                    if es[is - 1] < trange {
+                        errm = errm / 5.0;
+                    }
+                    let xm = sqrt(alpha * em);
+                    let aamin = self.bsigma_core(klast, xm, &mut sn, e, s);
+                    let mut v: Vec<f64> = (1..=nreac).map(|i| sn[i as i32]).collect();
+                    v.push(aamin);
+                    out.push((klast, xm.to_bits(), v));
+                    let dx = es[is - 1] - es[is];
+                    let f = (em - es[is]) / dx;
+                    let test = one - one / 100.0;
+                    let mut go170 = f > test;
+                    if !go170 {
+                        let mut stot = zero;
+                        for i in 1..=nreac {
+                            stot = stot + sn[i as i32];
+                        }
+                        for i in 1..=nreac {
+                            if stot < errmin {
+                                continue;
+                            }
+                            let sni = sn[i as i32];
+                            if (sni / stot).abs() < ssmall {
+                                continue;
+                            }
+                            let a = ss[(is - 1) * nreac + i - 1];
+                            let bb = ss[is * nreac + i - 1];
+                            if a > rmax * bb || a < bb / rmax {
+                                go170 = true;
+                                break;
+                            }
+                            let si = f * a + (1.0 - f) * bb;
+                            let dy = (sni - si).abs();
+                            if dy <= errt * sni.abs() + errmin {
+                                continue;
+                            }
+                            if dy > errm * sni.abs() + errmin || dy * dx / 2.0 > self.errint * em {
+                                go170 = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !go170 {
+                        if let Some(t1) = tt1 {
+                            let est = estp * (es[is] - t1);
+                            if dx > est {
+                                go170 = true;
+                            }
+                        }
+                    }
+                    if go170 {
+                        go150 = false;
+                    }
+                }
+            }
+            if go150 {
+                // 150
+                tt1 = Some(es[is]);
+                is -= 1;
+                if is > 1 {
+                    continue;
+                }
+                return;
+            }
+            // 170 (km = 0)
+            is += 1;
+            es[is] = es[is - 1];
+            es[is - 1] = em;
+            ks[is] = ks[is - 1];
+            ks[is - 1] = 0;
+            js[is] = js[is - 1];
+            js[is - 1] = 1;
+            for i in 0..nreac {
+                ss[is * nreac + i] = ss[(is - 1) * nreac + i];
+                ss[(is - 1) * nreac + i] = sn[(i + 1) as i32];
+            }
+        }
+    }
+
+    /// End of a broadn call: drop the cache.
+    fn bpf_done(&mut self) {
+        if let Some(pf) = self.bpf.0.take() {
+            if crate::util::pf_stats() {
+                eprintln!("broadr prefetch: {} hits, {} misses, {} threads, {:.2}s waiting", pf.hits, pf.misses, pf.nthr, pf.wait);
+            }
         }
     }
 
@@ -2212,6 +2602,15 @@ impl Broadr {
         self.f[4] = half * (two * self.f[2] + expo);
         expo = expo * a;
         self.f[5] = half * (three * self.f[3] + expo);
+    }
+}
+
+/// bsigma's truncation warning.
+fn bsigma_mess(c: &mut Ctx, aamin: f64) {
+    let atop = 4.0e0f64;
+    if aamin < atop {
+        let strng = format!("broadening truncated at a={}", ffmt::f(aamin, 3, 1));
+        c.mess("bsigma", &strng, " ");
     }
 }
 

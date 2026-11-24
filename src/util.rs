@@ -176,6 +176,12 @@ extern "C" {
 impl Ctx {
     /// `error`: print message and `stop 77`.
     pub fn error(&mut self, from: &str, mess1: &str, mess2: &str) -> ! {
+        if self.io.quiet {
+            // worker thread: give up this value; the main program computes
+            // it again and stops there with the real message
+            self.io.touched = true;
+            std::panic::resume_unwind(Box::new(crate::fio::WorkerAbort));
+        }
         let m1 = mess1.trim_end();
         let m2 = mess2.trim_end();
         self.io.so(&format!("\n ***error in {}***{}", from, m1));
@@ -410,4 +416,25 @@ impl Ctx {
 /// Helper: view of a 1-based slice as F.
 pub fn fv(v: &mut [f64]) -> F<'_> {
     F(v)
+}
+
+/// Number of threads for the parallel prefetch (RECONR `resxs`, BROADR
+/// `broadn`): the environment variable `NJOY_THREADS` if set (1 turns the
+/// prefetch off), else the number of CPUs. The output does not depend on it.
+pub fn threads() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        if let Ok(v) = std::env::var("NJOY_THREADS") {
+            if let Ok(n) = v.trim().parse::<usize>() {
+                return n.max(1);
+            }
+        }
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    })
+}
+
+/// `NJOY_PF_STATS` set: print prefetch hit/miss counts to standard error.
+pub fn pf_stats() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var_os("NJOY_PF_STATS").is_some())
 }

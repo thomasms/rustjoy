@@ -10,6 +10,71 @@ for byte.
 * BROADR Doppler-broadens and thins those pointwise cross sections to one or
   more temperatures.
 
+## Speed
+
+The port gives the same bytes as before, and is faster:
+
+Wall-clock seconds, best of 2 runs (Fortran: 1 run), on one 4-CPU Linux
+machine. "Before" is the previous commit of this port.
+
+| Case | Fortran (gfortran -O0) | Port before | Port now, 1 thread | Port now, 4 threads |
+| --- | ---: | ---: | ---: | ---: |
+| RECONR U-235 ENDF/B-VIII.0 (test 65), binary tapes | 68.0 | 40.0 | 14.5 | **5.8** |
+| RECONR same, ASCII tapes | 101.2 | 53.3 | 22.4 | **15.1** |
+| RECONR U-235 JENDL-3.3 (test 17) | 81.7 | 45.7 | 14.3 | **6.1** |
+| RECONR Pu-239 (test 27), ASCII | 16.3 | 8.9 | 4.4 | **2.2** |
+| BROADR U-235 (test 65), binary tapes | 26.4 | 13.5 | 13.4 | **5.6** |
+| BROADR same, ASCII tapes | 50.0 | 28.4 | 21.7 | **13.3** |
+| BROADR U-235 JENDL-3.3 (test 17) | 19.1 | 7.8 | 7.1 | **3.2** |
+| BROADR test 15, ASCII | 15.4 | 6.9 | 6.1 | **2.6** |
+
+Whole corpus (sum over all cases, from `run_all.sh`; 4 threads):
+
+| Corpus | Fortran | Port before | Port now |
+| --- | ---: | ---: | ---: |
+| RECONR, 177 cases | 576 s | 363 s | **86 s** |
+| BROADR, 108 cases | 355 s | 186 s | **75 s** |
+| BROADR variants, 58 cases | 34 s | 17 s | **11 s** |
+
+The ASCII cases gain less: reading and writing the text tapes runs on the
+main thread.
+
+What changed (none of it changes a floating-point operation or its order):
+
+* **Reich-Moore resonances (`csrmat`).** For each energy, the Fortran scans
+  the full resonance list once per J value and channel sign and skips the
+  resonances that do not match. The port now builds, once per section, the
+  list of resonances that each scan keeps (in the same order) and loops over
+  only those. The sums are the same additions in the same order.
+* **Fewer allocations:** `sigma` reuses its work arrays (zeroed each call,
+  as a new allocation would be); Fortran `I`, `F`, `E` editing and the
+  ENDF number reading build their text on the stack. The old routines are
+  kept, and `examples/ffmt_check.rs` checks the new ones against them on
+  110,998,901 random and edge-case inputs (all identical); `numcheck`
+  (against gfortran) is unchanged.
+* **Parallel prefetch** (`src/prefetch.rs`). RECONR `resxs` and BROADR
+  `broadn` refine an energy grid panel by panel. Worker threads now refine
+  the panels ahead of the main program, each with its own copy of the
+  data, and keep every cross section they compute. The main program then
+  runs the original sequential code unchanged; when it needs a cross
+  section, it takes the worker's value if one exists for exactly that
+  energy, else it computes it itself. A worker's value is used only if the
+  call had no side effect: it wrote nothing, did not stop, and did not use
+  state from an earlier call (for example the `csrmat` singular-matrix
+  case). State that a call leaves behind is rebuilt before the next real
+  call. BROADR's "broadening truncated" message is repeated from the stored
+  value. So the output cannot depend on the thread count or timing; the
+  check in `run_all.sh` compares 1 thread with the default, byte for byte,
+  for every case. The prefetch is used for SLBW, MLBW (0 K), Reich-Moore and
+  materials without resolved resonances; the other formats (MLBW with
+  temperature, which keeps state between calls; Adler-Adler; hybrid;
+  R-matrix limited through SAMMY) run as before.
+
+The number of threads is the number of CPUs; set `NJOY_THREADS=1` to turn
+the prefetch off, or another number to choose it. The machine used for the
+times above has 4 virtual CPUs that give about 2.7 CPUs of real throughput,
+so a machine with more cores gains more.
+
 ## Results: BROADR
 
 | Check | Cases | Identical |
@@ -17,6 +82,7 @@ for byte.
 | Every BROADR run in the NJOY2016 test suite, binary and ASCII forms | 108 | **108** |
 | Variants: 3 temperatures, bootstrap, thinning only, negative `thnmax`, > 9999 K, 293.6 K thermal quantities, restart, two materials in one call, skipping a material | 51 | **51** |
 | Numeric kernels `erfc` and `hnabb` (n = 0..4) | 1,000,152 inputs, 6 values each | **all** |
+| Port with 1 thread against 4 threads (all BROADR cases and variants) | 166 | **166** |
 
 Fortran line coverage of the 159 cases: `broadr.f90` 1,073 of 1,135
 executable lines run (**94.5%**); `erfc` 28 of its 30 lines. What is not run:
@@ -39,6 +105,8 @@ The port now writes the same.
 | Synthetic Adler-Adler / hybrid R-function data, against stock NJOY2016 | 6 | 1 (see below) |
 | The same 6, against NJOY2016 with the one-line fix `tools/njoy-sigp5-init.patch` | 6 | **6** |
 | Numeric kernels (`a11`, `a10`, `sigfig`, `x**n`, `e11.0` read, `E`/`F` output) | 2,009,128 values | **2,009,128** |
+| Port with 1 thread against 4 threads (every RECONR case) | 177 | **177** |
+| New allocation-free `I`/`F`/`E` editing and number reading against the previous code | 110,998,901 cases | **all** |
 
 "Identical" means: every tape that the run writes, the listing file
 `output`, standard output and the exit status are equal byte for byte
@@ -89,6 +157,7 @@ versions), which is why synthetic data was needed to test them at all.
 | `broadr.f90` (1,947 lines) | `src/broadr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC) |
 | `main.f90` | `src/main.rs` | banner and module loop (`reconr` and `broadr`) |
+| — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
 Not ported (unreachable from RECONR):
@@ -115,6 +184,9 @@ the listing goes to `output`, tapes are `tapeNN` files:
 Decks may contain `reconr`, `broadr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
+
+`NJOY_THREADS=n` sets the number of worker threads (default: the number of
+CPUs; 1 turns them off). The output is the same for any value.
 
 ## How equivalence is checked
 
@@ -151,7 +223,9 @@ with the Fortran `njoy` on the same tapes.
    through both languages and the outputs are compared byte for byte. For
    BROADR, `tools/numcheck_broadr.f90` and `examples/numcheck_broadr.rs` do
    the same for `erfc` and `hnabb` (`numcheck_gen.py broadr`).
-7. **Coverage** (`tools/coverage.sh`): a gcov build of NJOY runs the corpus,
+7. **Threads**: `compare.py` also compares the port with `NJOY_THREADS=1`
+   against the port with the default thread count, for every case.
+8. **Coverage** (`tools/coverage.sh`): a gcov build of NJOY runs the corpus,
    to show which Fortran lines the comparison exercises.
 
 To rerun everything (builds three Fortran copies, the port, the corpus, and

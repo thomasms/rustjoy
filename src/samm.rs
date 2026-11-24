@@ -131,7 +131,7 @@ fn sq(x: f64) -> f64 {
     x * x
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Samm {
     pub want_partial_derivs: bool,
     pub want_angular_dist: bool,
