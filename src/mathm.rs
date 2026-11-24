@@ -103,3 +103,21 @@ pub fn erfc(x: f64) -> f64 {
     }
     erfc
 }
+
+/// `legndr`: Legendre polynomials at x by recursion; p(l+1) = P_l(x).
+/// (p(1) and p(2) are always set.)
+pub fn legndr(x: f64, p: &mut [f64], np: i32) {
+    // p is 1-based in the Fortran: p(k) is p[k-1]
+    p[0] = 1.0;
+    p[1] = x;
+    if np < 2 {
+        return;
+    }
+    let m1 = np - 1;
+    for i in 1..=m1 {
+        let iu = i as usize;
+        let g = x * p[iu];
+        let h = g - p[iu - 1];
+        p[iu + 1] = h + g - h / ((i + 1) as f64);
+    }
+}

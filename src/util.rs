@@ -24,6 +24,11 @@ pub mod physics {
     pub const AMASSH: f64 = 3.014932247175e0;
     pub const AMASSA: f64 = 4.001506179127e0;
     pub const AMASSE: f64 = 5.48579909065e-4;
+    pub const PNRATIO: f64 = AMASSP / AMASSN;
+    pub const DNRATIO: f64 = AMASSD / AMASSN;
+    pub const TNRATIO: f64 = AMASST / AMASSN;
+    pub const HNRATIO: f64 = AMASSH / AMASSN;
+    pub const ANRATIO: f64 = AMASSA / AMASSN;
 }
 
 /// `sigfig(x,ndig,idig)`: round x to ndig significant figures and add idig in

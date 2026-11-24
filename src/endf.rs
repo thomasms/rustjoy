@@ -1204,6 +1204,37 @@ impl Ctx {
         }
     }
 
+    /// `skip6`: skip (or copy) the law-dependent part of the next File 6
+    /// subsection. Negative laws and laws 0, 3, 4 have none.
+    pub fn skip6(&mut self, nin: i32, nout: i32, nscr: i32, a: &mut F, law: i32) {
+        let (mut nb, mut nw) = (0i32, 0i32);
+        if law == 6 {
+            self.contio(nin, nout, nscr, a, &mut nb, &mut nw);
+        } else if law == 1 || law == 2 || law == 5 {
+            self.tab2io(nin, nout, nscr, a, &mut nb, &mut nw);
+            let ne = self.n2h;
+            for _ie in 1..=ne {
+                self.listio(nin, nout, nscr, a, &mut nb, &mut nw);
+                while nb != 0 {
+                    self.moreio(nin, nout, nscr, a, &mut nb, &mut nw);
+                }
+            }
+        } else if law == 7 {
+            self.tab2io(nin, nout, nscr, a, &mut nb, &mut nw);
+            let ne = self.n2h;
+            for _ie in 1..=ne {
+                self.tab2io(nin, nout, nscr, a, &mut nb, &mut nw);
+                let nmu = self.n2h;
+                for _imu in 1..=nmu {
+                    self.tab1io(nin, nout, nscr, a, &mut nb, &mut nw);
+                    while nb != 0 {
+                        self.moreio(nin, nout, nscr, a, &mut nb, &mut nw);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn tosend(&mut self, nin: i32, nout: i32, nscr: i32, a: &mut F) {
         self.copy_to(nin, nout, nscr, a, b's', "tosend");
     }

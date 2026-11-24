@@ -47,6 +47,10 @@ mkdir -p "$CV"
 BB="01_1 36_1_a 19_1 28_1_a 60_1_a 02_1 02_1_a"
 for b in $BB; do cp -a "$CB/$b" "$CV/"; done
 python3 "$R/tools/make_variants_broadr.py" "$CV" $BB --multi 02_1 1056
+CH="$W/corpus-heatr"
+python3 "$R/tools/build_corpus.py" "$N" "$CH" --module heatr
+CHV="$W/corpus-heatr-var"
+python3 "$R/tools/make_variants_heatr.py" "$N" "$CHV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -55,6 +59,10 @@ echo "   broadr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CB" "$W/compare-broadr" | tail -1
 echo "   broadr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CV" "$W/compare-broadr-var" | tail -1
+echo "   heatr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CH" "$W/compare-heatr" | tail -1
+echo "   heatr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CHV" "$W/compare-heatr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -108,3 +116,7 @@ CA="$W/corpus-broadr-all"
 mkdir -p "$CA"
 for d in "$CB"/* "$CV"/*; do [ -e "$CA/$(basename "$d")" ] || ln -s "$d" "$CA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CA" "$W/coverage-broadr" broadr mathm
+CHA="$W/corpus-heatr-all"
+mkdir -p "$CHA"
+for d in "$CH"/* "$CHV"/*; do [ -e "$CHA/$(basename "$d")" ] || ln -s "$d" "$CHA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CHA" "$W/coverage-heatr" heatr

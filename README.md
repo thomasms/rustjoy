@@ -1,6 +1,6 @@
 # rustjoy
 
-A Rust port of the **RECONR** and **BROADR** modules of
+A Rust port of the **RECONR**, **BROADR** and **HEATR** modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
@@ -9,6 +9,9 @@ for byte.
   parameters and writes a PENDF tape.
 * BROADR Doppler-broadens and thins those pointwise cross sections to one or
   more temperatures.
+* HEATR computes heating (kerma) and radiation damage energy production
+  from the PENDF and ENDF data and adds them to the PENDF tape (MT301 and
+  the requested partial kermas).
 
 ## Speed
 
@@ -74,6 +77,32 @@ The number of threads is the number of CPUs; set `NJOY_THREADS=1` to turn
 the prefetch off, or another number to choose it. The machine used for the
 times above has 4 virtual CPUs that give about 2.7 CPUs of real throughput,
 so a machine with more cores gains more.
+
+## Results: HEATR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every HEATR run in the NJOY2016 test suite, binary and ASCII forms | 27 | **27** |
+| Variants: 46 materials from the test resources (H to Pu, light-ion incident data, ENDF/B-III to VIII, JEFF, JENDL, TENDL), each with 2 of 5 option sets: 14 partial kermas, the kinematic check with plot file, user and energy-dependent Q values, local photon deposition with a given damage energy, defaults | 92 | **92** |
+
+Of the 92 variants, 10 stop with an NJOY error (for example data that HEATR
+does not support); the error message, the tapes written up to that point and
+the exit status are identical as well.
+
+Fortran line coverage of the 119 cases: `heatr.f90` 3,614 of 3,994
+executable lines run (**90.5%**); the test suite alone runs 81.9%. What is
+not run: error exits, File 6 discrete lines (`h6dis` and the delta-function
+part of `h6cm`), tabulated cm angular distributions in File 6, polynomial
+ν̄ and MT455 data, recoil from lab-system File 6 data, and ENDF-5 charged
+particle levels without angular data.
+
+Found during the comparison:
+
+* `nsyso` is unit 0 (`ERROR_UNIT`, connected to `output`), so the
+  `tab1io(0,nsyso,...)` that should list the user's energy-dependent Q
+  table writes nothing: only the line ` input q ----` appears.
+* An `X` skip at the end of a record writes nothing in libgfortran (the
+  `low`/`high` marker lines of the kinematic check).
 
 ## Results: BROADR
 
@@ -155,8 +184,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `endf.f90` | `src/endf.rs` | ENDF tape I/O, `a11`, interpolation |
 | `util.f90`, `phys.f90` | `src/util.rs` | `sigfig`, `a10`, scratch buffers, constants |
 | `broadr.f90` (1,947 lines) | `src/broadr.rs` | all routines |
-| `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC) |
-| `main.f90` | `src/main.rs` | banner and module loop (`reconr` and `broadr`) |
+| `heatr.f90` (6,322 lines) | `src/heatr.rs` | all routines |
+| `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
+| `endf.f90` (`skip6`) | `src/endf.rs` | added for HEATR |
+| `main.f90` | `src/main.rs` | banner and module loop (`reconr`, `broadr`, `heatr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -181,7 +212,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ./target/release/njoy-reconr < input
 ```
 
-Decks may contain `reconr`, `broadr` and `--` cards; any other module name
+Decks may contain `reconr`, `broadr`, `heatr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -208,6 +239,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    before the call (the Fortran runs them to make the PENDF input), and the
    `_a` form makes the whole chain ASCII. 108 cases.
    `tools/make_variants_broadr.py` adds the 51 option variants.
+   **HEATR corpus**: the same for every HEATR call (27 cases), and
+   `tools/make_variants_heatr.py` adds 92 variants (RECONR by the Fortran,
+   then HEATR with one of five option sets).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -282,6 +316,15 @@ purpose:
   can be read unset. The port keeps `tt` from the previous page and uses 0
   for the others. None of these paths is reached by the test cases (they
   need more than one page of points, or unusual MT152/MT51 data).
+* HEATR: with a plot file (`nplot`) but without `iprint=2`, `hout` plots the
+  minimum and maximum kinematic columns, which exist only with `iprint=2`:
+  it reads elements of its local `c(30)` that are never set (the Fortran
+  writes NaN or other leftover values). The port has 0 there, so these plot
+  files differ; the variants use the plot file only with `iprint=2`. The
+  test suite never asks for this.
+* HEATR: `conbar` sets `t1`/`t2` (discrete-energy File 5 law, LF=3) only
+  when it initializes a reaction, but they are not `save`d; the port keeps
+  the values from that call. No test data uses LF=3.
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.
