@@ -7,6 +7,7 @@ pub mod heatr;
 pub mod fio;
 pub mod fmath;
 pub mod mathm;
+pub mod moder;
 pub mod prefetch;
 pub mod reconr;
 pub mod samm;

@@ -1,10 +1,12 @@
 # rustjoy
 
-A Rust port of the **RECONR**, **BROADR** and **HEATR** modules of
+A Rust port of the **MODER**, **RECONR**, **BROADR** and **HEATR** modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
 
+* MODER converts ENDF-type tapes between text and blocked-binary form, and
+  selects materials from one or more tapes onto a new tape.
 * RECONR reconstructs pointwise cross sections from ENDF resonance
   parameters and writes a PENDF tape.
 * BROADR Doppler-broadens and thins those pointwise cross sections to one or
@@ -77,6 +79,26 @@ The number of threads is the number of CPUs; set `NJOY_THREADS=1` to turn
 the prefetch off, or another number to choose it. The machine used for the
 times above has 4 virtual CPUs that give about 2.7 CPUs of real throughput,
 so a machine with more cores gains more.
+
+## Results: MODER
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every MODER run in the NJOY2016 test suite, binary and ASCII forms | 286 | **286** |
+| Variants: every ENDF file of the test resources text→binary and binary→text (neutron, photonuclear, charged-particle, thermal scattering, photo-atomic, atomic relaxation, decay and covariance data, ENDF/B-III to VIII), and material selection from several text or binary tapes, a blank tape id, and the wrong-order error | 142 | **142** |
+
+One more case of the test suite cannot be compared: in the all-ASCII form of
+test 10 (`10_2_a`) a later Fortran module of the chain stops, so there is no
+input tape for the MODER call (the binary form `10_2` is compared).
+
+Fortran line coverage of the 428 cases: `moder.f90` 753 of 968 executable
+lines run (**77.8%**). What is not run: error exits, the continuation
+records of record types that no test file has longer than one page, and a
+few rare formats (File 7 MT451, File 15 LF=2, tabulated File 14, some
+File 32 forms). These use the same record routines as the rest.
+
+MODER also needed `intgio` (INTG records of File 32), added to
+`src/endf.rs`.
 
 ## Results: HEATR
 
@@ -184,10 +206,11 @@ versions), which is why synthetic data was needed to test them at all.
 | `endf.f90` | `src/endf.rs` | ENDF tape I/O, `a11`, interpolation |
 | `util.f90`, `phys.f90` | `src/util.rs` | `sigfig`, `a10`, scratch buffers, constants |
 | `broadr.f90` (1,947 lines) | `src/broadr.rs` | all routines |
+| `moder.f90` (1,714 lines) | `src/moder.rs` | all routines |
 | `heatr.f90` (6,322 lines) | `src/heatr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
-| `endf.f90` (`skip6`) | `src/endf.rs` | added for HEATR |
-| `main.f90` | `src/main.rs` | banner and module loop (`reconr`, `broadr`, `heatr`) |
+| `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -212,7 +235,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ./target/release/njoy-reconr < input
 ```
 
-Decks may contain `reconr`, `broadr`, `heatr` and `--` cards; any other module name
+Decks may contain `moder`, `reconr`, `broadr`, `heatr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -242,6 +265,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    **HEATR corpus**: the same for every HEATR call (27 cases), and
    `tools/make_variants_heatr.py` adds 92 variants (RECONR by the Fortran,
    then HEATR with one of five option sets).
+   **MODER corpus**: the same for every MODER call (286 cases), and
+   `tools/make_variants_moder.py` adds 142 variants (every resource file in
+   both directions, and material selection).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared

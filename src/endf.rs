@@ -1204,6 +1204,107 @@ impl Ctx {
         }
     }
 
+    /// `intgio`: read, write and/or convert one INTG record (nw in: the
+    /// number of digits 2..6, or the number of entries).
+    pub fn intgio(&mut self, nin: i32, nout: i32, nscr: i32, a: &mut F, nb: &mut i32, nw: &mut i32) {
+        const NWDIG: [i32; 6] = [0, 20, 15, 13, 11, 10];
+        // (width, count, blanks before, blanks after) of the packed part,
+        // after the two leading i5 fields
+        let layout = |nw: i32| -> Option<(usize, usize, usize, usize)> {
+            match nw {
+                20 => Some((3, 18, 1, 1)),
+                15 => Some((4, 13, 1, 3)),
+                13 => Some((5, 11, 1, 0)),
+                11 => Some((6, 9, 1, 1)),
+                10 => Some((7, 8, 1, 0)),
+                _ => None,
+            }
+        };
+
+        //--check number of digits
+        *nb = 0;
+        if *nw > 0 && *nw <= 6 {
+            *nw = NWDIG[(*nw - 1) as usize];
+        }
+
+        //--input
+        if nin < 0 {
+            let (b, w) = self.rbin(nin.abs(), a, |nw| nw);
+            *nb = b;
+            *nw = w;
+        } else if nin > 0 {
+            let line = self.io.read_line(nin);
+            let (w, n, pre, _post) = match layout(*nw) {
+                Some(l) => l,
+                None => self.error("intgio", "1invalid nw", " "),
+            };
+            let mut ia = Vec::with_capacity(*nw as usize);
+            ia.push(rd_i(&ffmt::fieldx(&line, 0, 5)));
+            ia.push(rd_i(&ffmt::fieldx(&line, 5, 5)));
+            let mut col = 10 + pre;
+            for _ in 0..n {
+                ia.push(rd_i(&ffmt::fieldx(&line, col, w)));
+                col += w;
+            }
+            col += _post;
+            self.math = rd_i(&ffmt::fieldx(&line, col, 4));
+            self.mfh = rd_i(&ffmt::fieldx(&line, col + 4, 2));
+            self.mth = rd_i(&ffmt::fieldx(&line, col + 6, 3));
+            self.nsp = rd_i(&ffmt::fieldx(&line, col + 9, 5));
+            for j in 1..=*nw {
+                a[j] = ia[(j - 1) as usize] as f64;
+            }
+        }
+
+        //--output
+        if nout == 0 && nscr == 0 {
+            return;
+        }
+        if nout < 0 {
+            self.wbin(nout.abs(), *nb, *nw, a, *nw);
+        }
+        if nscr < 0 {
+            self.wbin(nscr.abs(), *nb, *nw, a, *nw);
+        }
+
+        //--format the output
+        let fmt_line = |this: &Self, nw: i32| -> Option<String> {
+            let (w, n, pre, post) = layout(nw)?;
+            let mut s = String::with_capacity(80);
+            s.push_str(&ffmt::i(nint(a[1]), 5));
+            s.push_str(&ffmt::i(nint(a[2]), 5));
+            s.push_str(&" ".repeat(pre));
+            for j in 0..n {
+                s.push_str(&ffmt::i(nint(a[3 + j as i32]), w));
+            }
+            s.push_str(&" ".repeat(post));
+            s.push_str(&tail(this.math, this.mfh, this.mth, this.nsp));
+            Some(s)
+        };
+        if nscr > 0 {
+            let s = match fmt_line(self, *nw) {
+                Some(s) => s,
+                None => self.error("intgio", "2invalid nw", " "),
+            };
+            self.io.write_line(nscr, &s);
+            self.nsc += 1;
+            if self.nsc > 99999 {
+                self.nsc = 0;
+            }
+        }
+        if nout > 0 {
+            let s = match fmt_line(self, *nw) {
+                Some(s) => s,
+                None => self.error("intgio", "3invalid nw", " "),
+            };
+            self.io.write_line(nout, &s);
+            self.nsh += 1;
+            if self.nsh > 99999 {
+                self.nsh = 0;
+            }
+        }
+    }
+
     /// `skip6`: skip (or copy) the law-dependent part of the next File 6
     /// subsection. Negative laws and laws 0, 3, 4 have none.
     pub fn skip6(&mut self, nin: i32, nout: i32, nscr: i32, a: &mut F, law: i32) {
