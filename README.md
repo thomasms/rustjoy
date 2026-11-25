@@ -1,6 +1,7 @@
 # rustjoy
 
-A Rust port of the **MODER**, **RECONR**, **BROADR** and **HEATR** modules of
+A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR** and **THERMR**
+modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
@@ -14,6 +15,9 @@ for byte.
 * HEATR computes heating (kerma) and radiation damage energy production
   from the PENDF and ENDF data and adds them to the PENDF tape (MT301 and
   the requested partial kermas).
+* THERMR computes thermal neutron scattering cross sections and
+  energy-angle distributions (free gas, S(α,β) tables, coherent and
+  incoherent elastic) and adds them to the PENDF tape.
 
 ## Speed
 
@@ -79,6 +83,21 @@ The number of threads is the number of CPUs; set `NJOY_THREADS=1` to turn
 the prefetch off, or another number to choose it. The machine used for the
 times above has 4 virtual CPUs that give about 2.7 CPUs of real throughput,
 so a machine with more cores gains more.
+
+## Results: THERMR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every THERMR run in the NJOY2016 test suite, binary and ASCII forms | 30 | **30** |
+| Variants: S(α,β) data from 5 thermal files (H in H2O, Al, D in LiD, H and Zr in ZrH), each in E-μ-E' and E-E'-μ form and with the full listing; free gas at several temperatures, bin counts and print levels; a temperature above 3000 K; built-in coherent elastic (graphite, Be, BeO) and incoherent elastic (icoh 11, 12, 13); 4 error exits | 33 | **33** |
+
+Fortran line coverage of the 63 cases: `thermr.f90` 1,912 of 2,076
+executable lines run (**92.1%**). What is not run: most error exits, the
+continuation records of long thermal-file records, the second effective
+temperature of mixed-moderator data (`gatef2`), and some limit branches of
+`calcem` and `sig`.
+
+THERMR also needed `acos` from libm, added to `src/fmath.rs`.
 
 ## Results: MODER
 
@@ -208,9 +227,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `broadr.f90` (1,947 lines) | `src/broadr.rs` | all routines |
 | `moder.f90` (1,714 lines) | `src/moder.rs` | all routines |
 | `heatr.f90` (6,322 lines) | `src/heatr.rs` | all routines |
+| `thermr.f90` (3,387 lines) | `src/thermr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -235,7 +255,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ./target/release/njoy-reconr < input
 ```
 
-Decks may contain `moder`, `reconr`, `broadr`, `heatr` and `--` cards; any other module name
+Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -268,6 +288,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    **MODER corpus**: the same for every MODER call (286 cases), and
    `tools/make_variants_moder.py` adds 142 variants (every resource file in
    both directions, and material selection).
+   **THERMR corpus**: the same for every THERMR call (30 cases), and
+   `tools/make_variants_thermr.py` adds 33 variants (RECONR and BROADR by
+   the Fortran, then THERMR with S(α,β), free-gas or built-in data).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
