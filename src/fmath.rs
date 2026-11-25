@@ -27,6 +27,7 @@ mod c {
         pub fn sinh(x: f64) -> f64;
         pub fn cosh(x: f64) -> f64;
         pub fn tanh(x: f64) -> f64;
+        pub fn acos(x: f64) -> f64;
     }
 }
 
@@ -55,6 +56,8 @@ pub fn sinh(x: f64) -> f64 { unsafe { c::sinh(x) } }
 pub fn cosh(x: f64) -> f64 { unsafe { c::cosh(x) } }
 #[inline(never)]
 pub fn tanh(x: f64) -> f64 { unsafe { c::tanh(x) } }
+#[inline]
+pub fn acos(x: f64) -> f64 { unsafe { c::acos(x) } }
 /// sqrt is correctly rounded in IEEE arithmetic; gfortran emits `sqrtsd`.
 #[inline]
 pub fn sqrt(x: f64) -> f64 { x.sqrt() }

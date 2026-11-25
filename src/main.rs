@@ -6,7 +6,7 @@
 //! directory. Only the `moder`, `reconr`, `broadr` and `heatr` modules (and
 //! `--` comment cards) are supported.
 
-use reconr_rs::{broadr, endf, ffmt, fio, heatr, moder, reconr, util};
+use reconr_rs::{broadr, endf, ffmt, fio, heatr, moder, reconr, thermr, util};
 
 use std::io::Read;
 
@@ -54,6 +54,7 @@ fn main() {
     let mut br = broadr::Broadr::new();
     let mut ht = heatr::Heatr::new();
     let mut md = moder::Moder::new();
+    let mut tm = thermr::Thermr::new();
     loop {
         let v = ctx.io.input.read(&[fio::Kind::Char(6)]);
         // a null value leaves the variable unchanged (blank on first read)
@@ -77,6 +78,9 @@ fn main() {
             }
             "moder" => {
                 md.moder(&mut ctx);
+            }
+            "thermr" => {
+                tm.thermr(&mut ctx);
             }
             "--" => {}
             _ => {
