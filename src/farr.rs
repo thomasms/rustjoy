@@ -117,6 +117,36 @@ impl IndexMut<(i32, i32)> for RM {
     }
 }
 
+/// Column-major 3-D real array with 1-based indices (`a(n1,n2,n3)`).
+#[derive(Clone, Default, Debug)]
+pub struct R3 {
+    pub n1: usize,
+    pub n2: usize,
+    pub v: Vec<f64>,
+}
+
+impl R3 {
+    pub fn new(n1: usize, n2: usize, n3: usize) -> Self {
+        R3 { n1, n2, v: vec![0.0; n1 * n2 * n3] }
+    }
+    pub fn empty() -> Self {
+        R3 { n1: 0, n2: 0, v: Vec::new() }
+    }
+}
+impl Index<(i32, i32, i32)> for R3 {
+    type Output = f64;
+    #[inline]
+    fn index(&self, (i, j, k): (i32, i32, i32)) -> &f64 {
+        &self.v[(i - 1) as usize + self.n1 * ((j - 1) as usize + self.n2 * (k - 1) as usize)]
+    }
+}
+impl IndexMut<(i32, i32, i32)> for R3 {
+    #[inline]
+    fn index_mut(&mut self, (i, j, k): (i32, i32, i32)) -> &mut f64 {
+        &mut self.v[(i - 1) as usize + self.n1 * ((j - 1) as usize + self.n2 * (k - 1) as usize)]
+    }
+}
+
 /// Pack 4-character Hollerith text into the bytes of a real array, as a
 /// Fortran `equivalence` of `character(4)::t(17)` with `real(kr)::r(17)` does:
 /// the 68 characters occupy the first 68 bytes of the 136-byte array.

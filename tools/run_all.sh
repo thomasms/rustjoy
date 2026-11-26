@@ -71,6 +71,10 @@ CP="$W/corpus-purr"
 python3 "$R/tools/build_corpus.py" "$N" "$CP" --module purr
 CPV="$W/corpus-purr-var"
 python3 "$R/tools/make_variants_purr.py" "$N" "$CPV"
+CL="$W/corpus-leapr"
+python3 "$R/tools/build_corpus.py" "$N" "$CL" --module leapr
+CLV="$W/corpus-leapr-var"
+python3 "$R/tools/make_variants_leapr.py" "$CLV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -103,6 +107,10 @@ echo "   purr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CP" "$W/compare-purr" | tail -1
 echo "   purr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CPV" "$W/compare-purr-var" | tail -1
+echo "   leapr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CL" "$W/compare-leapr" | tail -1
+echo "   leapr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CLV" "$W/compare-leapr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -180,3 +188,7 @@ CPA="$W/corpus-purr-all"
 mkdir -p "$CPA"
 for d in "$CP"/* "$CPV"/*; do [ -e "$CPA/$(basename "$d")" ] || ln -s "$d" "$CPA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CPA" "$W/coverage-purr" purr
+CLA="$W/corpus-leapr-all"
+mkdir -p "$CLA"
+for d in "$CL"/* "$CLV"/*; do [ -e "$CLA/$(basename "$d")" ] || ln -s "$d" "$CLA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CLA" "$W/coverage-leapr" leapr

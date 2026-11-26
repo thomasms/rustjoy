@@ -1,7 +1,7 @@
 # rustjoy
 
 A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
-**UNRESR**, **GASPR** and **PURR** modules of
+**UNRESR**, **GASPR**, **PURR** and **LEAPR** modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
@@ -26,6 +26,11 @@ for byte.
 * PURR samples resonance ladders in the unresolved range (Monte Carlo) to
   make probability tables (MF2/MT153) and Bondarenko cross sections
   (MF2/MT152) and adds them to the PENDF tape.
+* LEAPR computes the thermal scattering law S(α,β) from a phonon frequency
+  spectrum (phonon expansion, with free-gas or diffusive translation,
+  discrete oscillators, cold hydrogen and deuterium, and Skold
+  coherence), with incoherent or coherent (Bragg edge) elastic data, and
+  writes it as an ENDF-6 File 7 tape. It needs no input tape.
 
 ## Speed
 
@@ -132,6 +137,24 @@ lines run (**82.7%**). Most lines not run are entries of the reaction
 tables (MT152-200 and rare LR values) that no test file has; a script
 wrote those Rust lines directly from the Fortran. Also not run: MF6 laws 6
 and 7, and the gas production listing (`iprint` is fixed at 0).
+
+## Results: LEAPR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every LEAPR run in the NJOY2016 test suite (tests 09, 22, 23, 33 twice, 80), and the ASCII form of test 09 | 7 | **7** |
+| Variants: H in H2O with free gas, diffusion and oscillators, the three print levels, several temperatures (with reuse of the parameters), `lat=1`, `isabt=1`, `ilog=1`, a pure solid (incoherent elastic), phonon order 260, free, diffusive and mixed secondary scatterers, 320 α values, large α values; coherent elastic for every lattice (`iel` 1 to 6), with one, two and three temperatures; ortho and para hydrogen and deuterium (`ncold` 1 to 4) with each `isabt`/`ilog` pair, for one and two temperatures; both s(κ) options (Vineyard, Skold); 2 error exits | 66 | **66** |
+
+Fortran line coverage of the 73 cases: `leapr.f90` 1,990 of 2,038
+executable lines run (**97.6%**). What is not run: error exits, code that
+fixed values make unreachable (the moment check in `stable` has
+`icheck=0`, the free-gas branch in `coldh` has `ifree=0`, and the extra
+temperature points in `endout` need `ntf > ntempr`), a zero S(α,β) in
+`terps`, large arguments in `sjbes`, and one branch of the hexagonal
+Bragg-edge search.
+
+Test 80 (200 α by 1,325 β values with diffusion) takes 154 s with the
+Fortran and 58 s with the port.
 
 ## Results: PURR
 
@@ -280,9 +303,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `unresr.f90` (1,665 lines) | `src/unresr.rs` | all routines |
 | `gaspr.f90` (1,153 lines) | `src/gaspr.rs` | all routines |
 | `purr.f90` (2,919 lines) | `src/purr.rs` | all routines |
+| `leapr.f90` (3,625 lines) | `src/leapr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -308,7 +332,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
-`gaspr`, `purr` and `--` cards; any other module name
+`gaspr`, `purr`, `leapr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -353,6 +377,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    **PURR corpus**: the same for every PURR call (27 cases), and
    `tools/make_variants_purr.py` adds 93 variants (RECONR, BROADR and
    sometimes HEATR, UNRESR or MODER by the Fortran, then PURR).
+   **LEAPR corpus**: the same for every LEAPR call (7 cases), and
+   `tools/make_variants_leapr.py` adds 66 decks (LEAPR alone, no input
+   tapes).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -436,6 +463,20 @@ purpose:
 * HEATR: `conbar` sets `t1`/`t2` (discrete-energy File 5 law, LF=3) only
   when it initializes a reaction, but they are not `save`d; the port keeps
   the values from that call. No test data uses LF=3.
+* LEAPR, coherent elastic output: when the number of Bragg edges kept
+  (`jmax`) is a multiple of `npage/2` (153 for the default page), the
+  first temperature fills the TAB1 record exactly, and the next edges are
+  written to `scr(-1)` and `scr(0)`, before the start of the array. The
+  Fortran then aborts (`munmap_chunk(): invalid pointer`) at the
+  `deallocate` statements after `endout`, and loses the end of its listing
+  and of the tape (the MEND and TEND records). The port keeps those two
+  words (the Fortran reads one back as the running sum) and finishes
+  normally: its tape is the same as the Fortran tape for every line the
+  Fortran wrote. One variant hit this with BeO; it now uses graphite.
+* LEAPR, `isym=3` with `ilog=1`: the Fortran tests `ssp(-nbeta+1,j,nt)`
+  (a value nbeta words before `ssp(1,j,nt)`). The port reads the same
+  word; for j=1 at the first temperature that word is before the array,
+  and the port takes it as positive.
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.

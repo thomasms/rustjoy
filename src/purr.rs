@@ -12,10 +12,9 @@
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::needless_range_loop)]
 
-use std::ops::{Index, IndexMut};
 
 use crate::endf::Ctx;
-use crate::farr::{RM, RV};
+use crate::farr::{R3, RM, RV};
 use crate::ffmt;
 use crate::fio::{fatal_runtime, Kind, RecW, Val};
 use crate::fmath::{atan, cos, exp, int, log, nint, pow, powc, sin, sqrt};
@@ -45,35 +44,6 @@ fn getr(v: &Option<Val>, d: f64) -> f64 {
         Some(Val::Real(x)) => *x,
         Some(Val::Int(i)) => *i as f64,
         _ => d,
-    }
-}
-
-/// Owning 1-based three-index array (column-major).
-struct R3 {
-    n1: usize,
-    n2: usize,
-    v: Vec<f64>,
-}
-
-impl R3 {
-    fn new(n1: usize, n2: usize, n3: usize) -> Self {
-        R3 { n1, n2, v: vec![0.0; n1 * n2 * n3] }
-    }
-    fn empty() -> Self {
-        R3 { n1: 0, n2: 0, v: Vec::new() }
-    }
-}
-impl Index<(i32, i32, i32)> for R3 {
-    type Output = f64;
-    #[inline]
-    fn index(&self, (i, j, k): (i32, i32, i32)) -> &f64 {
-        &self.v[(i - 1) as usize + self.n1 * ((j - 1) as usize + self.n2 * (k - 1) as usize)]
-    }
-}
-impl IndexMut<(i32, i32, i32)> for R3 {
-    #[inline]
-    fn index_mut(&mut self, (i, j, k): (i32, i32, i32)) -> &mut f64 {
-        &mut self.v[(i - 1) as usize + self.n1 * ((j - 1) as usize + self.n2 * (k - 1) as usize)]
     }
 }
 

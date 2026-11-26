@@ -5,6 +5,7 @@ pub mod farr;
 pub mod ffmt;
 pub mod gaspr;
 pub mod heatr;
+pub mod leapr;
 pub mod fio;
 pub mod fmath;
 pub mod mathm;
