@@ -1,7 +1,7 @@
 # rustjoy
 
-A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR** and **THERMR**
-modules of
+A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR** and
+**UNRESR** modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
@@ -18,6 +18,9 @@ for byte.
 * THERMR computes thermal neutron scattering cross sections and
   energy-angle distributions (free gas, S(α,β) tables, coherent and
   incoherent elastic) and adds them to the PENDF tape.
+* UNRESR computes self-shielded effective cross sections in the unresolved
+  resonance range (Bondarenko method) and adds them to the PENDF tape as
+  MF2/MT152.
 
 ## Speed
 
@@ -98,6 +101,19 @@ temperature of mixed-moderator data (`gatef2`), and some limit branches of
 `calcem` and `sig`.
 
 THERMR also needed `acos` from libm, added to `src/fmath.rs`.
+
+## Results: UNRESR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every UNRESR run in the NJOY2016 test suite, binary and ASCII forms | 10 | **10** |
+| Variants: 15 materials (Pu-240, Fe-58, U-235, Zr-90, Mn-55, Ag-109, Sr-88, Am-242, Co-58, Ni-63, Kr-83, Ar-37, JENDL-3.3 U-238, and Al-27 and H-1 with no unresolved range), each with one temperature and two sigma-zero values, and with three temperatures, seven sigma-zero values and the full listing | 30 | **30** |
+
+Fortran line coverage of the 40 cases: `unresr.f90` 985 of 1,044
+executable lines run (**94.3%**). What is not run: error exits, the
+continuation records of long lists, an energy-dependent scattering radius
+inside the unresolved range (`nro=1`), and some branches of the `uw`
+complex probability function.
 
 ## Results: MODER
 
@@ -228,9 +244,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `moder.f90` (1,714 lines) | `src/moder.rs` | all routines |
 | `heatr.f90` (6,322 lines) | `src/heatr.rs` | all routines |
 | `thermr.f90` (3,387 lines) | `src/thermr.rs` | all routines |
+| `unresr.f90` (1,665 lines) | `src/unresr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -255,7 +272,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ./target/release/njoy-reconr < input
 ```
 
-Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr` and `--` cards; any other module name
+Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -291,6 +308,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    **THERMR corpus**: the same for every THERMR call (30 cases), and
    `tools/make_variants_thermr.py` adds 33 variants (RECONR and BROADR by
    the Fortran, then THERMR with S(α,β), free-gas or built-in data).
+   **UNRESR corpus**: the same for every UNRESR call (10 cases), and
+   `tools/make_variants_unresr.py` adds 30 variants (RECONR and BROADR by
+   the Fortran, then UNRESR on 15 materials).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared

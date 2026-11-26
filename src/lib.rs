@@ -10,6 +10,7 @@ pub mod mathm;
 pub mod moder;
 pub mod prefetch;
 pub mod thermr;
+pub mod unresr;
 pub mod reconr;
 pub mod samm;
 pub mod util;

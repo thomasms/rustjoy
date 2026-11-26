@@ -59,6 +59,10 @@ CT="$W/corpus-thermr"
 python3 "$R/tools/build_corpus.py" "$N" "$CT" --module thermr
 CTV="$W/corpus-thermr-var"
 python3 "$R/tools/make_variants_thermr.py" "$N" "$CTV"
+CU="$W/corpus-unresr"
+python3 "$R/tools/build_corpus.py" "$N" "$CU" --module unresr
+CUV="$W/corpus-unresr-var"
+python3 "$R/tools/make_variants_unresr.py" "$N" "$CUV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -79,6 +83,10 @@ echo "   thermr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CT" "$W/compare-thermr" | tail -1
 echo "   thermr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CTV" "$W/compare-thermr-var" | tail -1
+echo "   unresr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CU" "$W/compare-unresr" | tail -1
+echo "   unresr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CUV" "$W/compare-unresr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -144,3 +152,7 @@ CTA="$W/corpus-thermr-all"
 mkdir -p "$CTA"
 for d in "$CT"/* "$CTV"/*; do [ -e "$CTA/$(basename "$d")" ] || ln -s "$d" "$CTA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CTA" "$W/coverage-thermr" thermr
+CUA="$W/corpus-unresr-all"
+mkdir -p "$CUA"
+for d in "$CU"/* "$CUV"/*; do [ -e "$CUA/$(basename "$d")" ] || ln -s "$d" "$CUA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CUA" "$W/coverage-unresr" unresr
