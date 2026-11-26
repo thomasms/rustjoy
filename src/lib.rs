@@ -10,6 +10,7 @@ pub mod fmath;
 pub mod mathm;
 pub mod moder;
 pub mod prefetch;
+pub mod purr;
 pub mod thermr;
 pub mod unresr;
 pub mod reconr;

@@ -67,6 +67,10 @@ CG="$W/corpus-gaspr"
 python3 "$R/tools/build_corpus.py" "$N" "$CG" --module gaspr
 CGV="$W/corpus-gaspr-var"
 python3 "$R/tools/make_variants_gaspr.py" "$N" "$CGV"
+CP="$W/corpus-purr"
+python3 "$R/tools/build_corpus.py" "$N" "$CP" --module purr
+CPV="$W/corpus-purr-var"
+python3 "$R/tools/make_variants_purr.py" "$N" "$CPV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -95,6 +99,10 @@ echo "   gaspr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CG" "$W/compare-gaspr" | tail -1
 echo "   gaspr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGV" "$W/compare-gaspr-var" | tail -1
+echo "   purr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CP" "$W/compare-purr" | tail -1
+echo "   purr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CPV" "$W/compare-purr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -168,3 +176,7 @@ CGA="$W/corpus-gaspr-all"
 mkdir -p "$CGA"
 for d in "$CG"/* "$CGV"/*; do [ -e "$CGA/$(basename "$d")" ] || ln -s "$d" "$CGA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CGA" "$W/coverage-gaspr" gaspr
+CPA="$W/corpus-purr-all"
+mkdir -p "$CPA"
+for d in "$CP"/* "$CPV"/*; do [ -e "$CPA/$(basename "$d")" ] || ln -s "$d" "$CPA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CPA" "$W/coverage-purr" purr

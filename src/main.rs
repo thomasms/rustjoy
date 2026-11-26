@@ -1,13 +1,14 @@
 //! `njoy-reconr`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR,
-//! UNRESR and GASPR modules of NJOY2016.
+//! UNRESR, GASPR and PURR modules of NJOY2016.
 //!
 //! Usage is the same as `njoy`: the input deck is read from standard input,
 //! the listing is written to the file `output`, terminal messages go to
 //! standard output, and ENDF/PENDF tapes are `tapeNN` files in the current
 //! directory. Only the `moder`, `reconr`, `broadr`, `heatr`, `thermr`,
-//! `unresr` and `gaspr` modules (and `--` comment cards) are supported.
+//! `unresr`, `gaspr` and `purr` modules (and `--` comment cards) are
+//! supported.
 
-use reconr_rs::{broadr, endf, ffmt, fio, gaspr, heatr, moder, reconr, thermr, unresr, util};
+use reconr_rs::{broadr, endf, ffmt, fio, gaspr, heatr, moder, purr, reconr, thermr, unresr, util};
 
 use std::io::Read;
 
@@ -57,6 +58,7 @@ fn main() {
     let mut md = moder::Moder::new();
     let mut tm = thermr::Thermr::new();
     let mut ur = unresr::Unresr::new();
+    let mut pu = purr::Purr::new();
     loop {
         let v = ctx.io.input.read(&[fio::Kind::Char(6)]);
         // a null value leaves the variable unchanged (blank on first read)
@@ -89,6 +91,9 @@ fn main() {
             }
             "gaspr" => {
                 gaspr::gaspr(&mut ctx);
+            }
+            "purr" => {
+                pu.purr(&mut ctx);
             }
             "--" => {}
             _ => {
