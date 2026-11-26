@@ -3,6 +3,7 @@ pub mod broadr;
 pub mod endf;
 pub mod farr;
 pub mod ffmt;
+pub mod gaspr;
 pub mod heatr;
 pub mod fio;
 pub mod fmath;

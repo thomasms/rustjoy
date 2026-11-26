@@ -1,7 +1,7 @@
 # rustjoy
 
-A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR** and
-**UNRESR** modules of
+A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
+**UNRESR** and **GASPR** modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
@@ -21,6 +21,8 @@ for byte.
 * UNRESR computes self-shielded effective cross sections in the unresolved
   resonance range (Bondarenko method) and adds them to the PENDF tape as
   MF2/MT152.
+* GASPR adds gas production cross sections (MT203-207: protons,
+  deuterons, tritons, helium-3 and alphas) to the PENDF tape.
 
 ## Speed
 
@@ -114,6 +116,19 @@ executable lines run (**94.3%**). What is not run: error exits, the
 continuation records of long lists, an energy-dependent scattering radius
 inside the unresolved range (`nro=1`), and some branches of the `uw`
 complex probability function.
+
+## Results: GASPR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every GASPR run in the NJOY2016 test suite, binary and ASCII forms | 9 | **9** |
+| Variants: every neutron ENDF file of the test resources and 6 more evaluations (JENDL-3.3, ENDF/B-IV and ENDF/B-V tapes), 28 of them with MF6/MT5 yields; for 6 materials also three temperatures, blocked-binary tapes, and a second GASPR on a tape that has gas data; 1 error exit | 60 | **60** |
+
+Fortran line coverage of the 69 cases: `gaspr.f90` 790 of 955 executable
+lines run (**82.7%**). Most lines not run are entries of the reaction
+tables (MT152-200 and rare LR values) that no test file has; a script
+wrote those Rust lines directly from the Fortran. Also not run: MF6 laws 6
+and 7, and the gas production listing (`iprint` is fixed at 0).
 
 ## Results: MODER
 
@@ -245,9 +260,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `heatr.f90` (6,322 lines) | `src/heatr.rs` | all routines |
 | `thermr.f90` (3,387 lines) | `src/thermr.rs` | all routines |
 | `unresr.f90` (1,665 lines) | `src/unresr.rs` | all routines |
+| `gaspr.f90` (1,153 lines) | `src/gaspr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -272,7 +288,8 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ./target/release/njoy-reconr < input
 ```
 
-Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr` and `--` cards; any other module name
+Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
+`gaspr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -311,6 +328,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    **UNRESR corpus**: the same for every UNRESR call (10 cases), and
    `tools/make_variants_unresr.py` adds 30 variants (RECONR and BROADR by
    the Fortran, then UNRESR on 15 materials).
+   **GASPR corpus**: the same for every GASPR call (9 cases), and
+   `tools/make_variants_gaspr.py` adds 60 variants (RECONR and other
+   modules by the Fortran, then GASPR).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared

@@ -1,13 +1,13 @@
-//! `njoy-reconr`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR and
-//! UNRESR modules of NJOY2016.
+//! `njoy-reconr`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR,
+//! UNRESR and GASPR modules of NJOY2016.
 //!
 //! Usage is the same as `njoy`: the input deck is read from standard input,
 //! the listing is written to the file `output`, terminal messages go to
 //! standard output, and ENDF/PENDF tapes are `tapeNN` files in the current
-//! directory. Only the `moder`, `reconr`, `broadr`, `heatr`, `thermr` and
-//! `unresr` modules (and `--` comment cards) are supported.
+//! directory. Only the `moder`, `reconr`, `broadr`, `heatr`, `thermr`,
+//! `unresr` and `gaspr` modules (and `--` comment cards) are supported.
 
-use reconr_rs::{broadr, endf, ffmt, fio, heatr, moder, reconr, thermr, unresr, util};
+use reconr_rs::{broadr, endf, ffmt, fio, gaspr, heatr, moder, reconr, thermr, unresr, util};
 
 use std::io::Read;
 
@@ -86,6 +86,9 @@ fn main() {
             }
             "unresr" => {
                 ur.unresr(&mut ctx);
+            }
+            "gaspr" => {
+                gaspr::gaspr(&mut ctx);
             }
             "--" => {}
             _ => {

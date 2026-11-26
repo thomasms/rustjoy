@@ -63,6 +63,10 @@ CU="$W/corpus-unresr"
 python3 "$R/tools/build_corpus.py" "$N" "$CU" --module unresr
 CUV="$W/corpus-unresr-var"
 python3 "$R/tools/make_variants_unresr.py" "$N" "$CUV"
+CG="$W/corpus-gaspr"
+python3 "$R/tools/build_corpus.py" "$N" "$CG" --module gaspr
+CGV="$W/corpus-gaspr-var"
+python3 "$R/tools/make_variants_gaspr.py" "$N" "$CGV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -87,6 +91,10 @@ echo "   unresr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CU" "$W/compare-unresr" | tail -1
 echo "   unresr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CUV" "$W/compare-unresr-var" | tail -1
+echo "   gaspr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CG" "$W/compare-gaspr" | tail -1
+echo "   gaspr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGV" "$W/compare-gaspr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -156,3 +164,7 @@ CUA="$W/corpus-unresr-all"
 mkdir -p "$CUA"
 for d in "$CU"/* "$CUV"/*; do [ -e "$CUA/$(basename "$d")" ] || ln -s "$d" "$CUA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CUA" "$W/coverage-unresr" unresr
+CGA="$W/corpus-gaspr-all"
+mkdir -p "$CGA"
+for d in "$CG"/* "$CGV"/*; do [ -e "$CGA/$(basename "$d")" ] || ln -s "$d" "$CGA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CGA" "$W/coverage-gaspr" gaspr
