@@ -1,7 +1,7 @@
 # rustjoy
 
 A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
-**UNRESR**, **GASPR**, **PURR** and **LEAPR** modules of
+**UNRESR**, **GASPR**, **PURR**, **LEAPR** and **MIXR** modules of
 [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
 2016.80), with a harness that checks them against the Fortran program byte
 for byte.
@@ -31,6 +31,9 @@ for byte.
   discrete oscillators, cold hydrogen and deuterium, and Skold
   coherence), with incoherent or coherent (Bragg edge) elastic data, and
   writes it as an ENDF-6 File 7 tape. It needs no input tape.
+* MIXR makes a PENDF tape of mixed cross sections: each output MT is a
+  weighted sum of that MT from several materials, on the union energy
+  grid (for example, elemental cross sections).
 
 ## Speed
 
@@ -155,6 +158,16 @@ Bragg-edge search.
 
 Test 80 (200 α by 1,325 β values with diffusion) takes 154 s with the
 Fortran and 58 s with the port.
+
+## Results: MIXR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| No NJOY2016 test calls MIXR. Variants: two to ten materials and up to twenty MTs on PENDF tapes; an MT missing from one tape or from all tapes; 100,000-point sections (many pages); raw ENDF tapes (ENDF/B-IV, -V and -VI formats, incident protons, deuterons, helium-3 and alphas); the second and third temperature of BROADR tapes; blocked-binary tapes; a negative weight; 2 error exits | 28 | **28** |
+
+Fortran line coverage of the 28 cases: `mixr.f90` 307 of 309 executable
+lines run (**99.4%**). The two lines not run are error exits that the
+code cannot reach (the array limit and an uninitialised `gety`).
 
 ## Results: PURR
 
@@ -304,9 +317,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `gaspr.f90` (1,153 lines) | `src/gaspr.rs` | all routines |
 | `purr.f90` (2,919 lines) | `src/purr.rs` | all routines |
 | `leapr.f90` (3,625 lines) | `src/leapr.rs` | all routines |
+| `mixr.f90` (533 lines) | `src/mixr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -332,7 +346,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
-`gaspr`, `purr`, `leapr` and `--` cards; any other module name
+`gaspr`, `purr`, `leapr`, `mixr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -380,6 +394,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    **LEAPR corpus**: the same for every LEAPR call (7 cases), and
    `tools/make_variants_leapr.py` adds 66 decks (LEAPR alone, no input
    tapes).
+   **MIXR corpus**: no test calls MIXR, so
+   `tools/make_variants_mixr.py` makes all 28 cases (RECONR and
+   sometimes BROADR or MODER by the Fortran, then MIXR).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -477,6 +494,12 @@ purpose:
   (a value nbeta words before `ssp(1,j,nt)`). The port reads the same
   word; for j=1 at the first temperature that word is before the array,
   and the port takes it as positive.
+* MIXR reads each input tape forward only, as the Fortran does. An MT
+  that comes after a larger MT in the input list is reported as "not
+  present". When an MT is missing from a tape, the Fortran goes back to
+  the start of MF3 and then skips one section, so the first MF3 section
+  (normally MT1) of that tape is not found for the next MT. The port does
+  the same.
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.
