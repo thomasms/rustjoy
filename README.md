@@ -1,8 +1,8 @@
 # rustjoy
 
 A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
-**UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR**, **RESXSR**, **DTFR** and
-**GAMINR** modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
+**UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR**, **RESXSR**, **DTFR**,
+**GAMINR** and **GROUPR** modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
 version 2016.80), with a harness that checks them against the Fortran
 program byte for byte.
 
@@ -45,6 +45,12 @@ program byte for byte.
   matrices and heating kerma factors from ENDF photon data (MF23 cross
   sections and MF27 form factors) and a PENDF tape, and writes them on a
   GENDF tape.
+* GROUPR makes multigroup cross sections from a PENDF tape: self-shielded
+  (Bondarenko) cross sections and ratios, neutron scattering matrices
+  (Files 4, 5 and 6, thermal MF6 data), fission and delayed-neutron
+  spectra, photon and charged-particle production matrices, and nuclide
+  production, with 36 neutron and 10 photon group structures, 12 weight
+  functions and a flux calculator. It writes a GENDF tape.
 
 ## Speed
 
@@ -216,6 +222,22 @@ photon file), the form-factor storage error, one exit of the incoherent
 panel loop, and code that is not reachable (6-point quadrature in
 `gpanel`, more than one page of total heating values for one group).
 
+## Results: GROUPR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every GROUPR run that `build_corpus.py` finds in the NJOY2016 test suite (20 tests), binary and ASCII forms | 48 | **48** |
+| Variants: all 35 built-in neutron group structures and all 10 gamma structures (two read in), all 12 weight functions, the flux calculator (iwt<0, with admixed and external moderators) and a flux read back from `ninwt` (iwt=0), Legendre orders 0 to 8, both print and smoothing options, two temperatures, sigma zeroes with and without unresolved data, the automatic lists (`3/`, `6/`, `10/`, `13/`, `16/`, `21/` to `26/`, `31/`, `35/`), extended nuclide production cards (`-1/`), MT251-253 and MT257-259, fission spectra, nubar and delayed neutrons (U-235 ENDF/B-V and the test 76 deck), File 6 laws 1, 2, 3, 6 and 7 and the discrete capture gamma of H-1, particle and nuclide production (Be, H-2, B-10, Al, Ca, Fe, Co, Ni, Pu-241), thermal MF6 data from THERMR (H in ZrH, Al), incident protons, deuterons and alphas, incident photons, gout tapes (replace a material, add MTs, a material below the first one on the tape, two materials); 12 error exits, and 8 runs that stop part way with the same error in both programs (data that GROUPR cannot handle, a wrong MT range, and the gout-tape options of Known limits) | 115 | **115** |
+
+Fortran line coverage of the 163 cases: `groupr.f90` 5,571 of 6,236 executable
+lines run (**89.3%**). What is not run: most error exits; the Madland-Nix
+spectrum (not ported, see above); discrete lines in centre-of-mass File 6
+data (`f6dis`) and tabulated angular distributions in File 6 law 1
+(LANG=11-15); the Coulomb amplitude expansion of charged-particle elastic
+data in `getco`; ENDF-5 charged-particle MT numbers; the temperature
+search of `getfwt` for a second temperature; the recoil branch of
+`gam102`; and the unresolved sigma-zero warnings.
+
 ## Results: PURR
 
 | Check | Cases | Identical |
@@ -368,9 +390,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `resxsr.f90` (505 lines) | `src/resxsr.rs` | all routines |
 | `dtfr.f90` (1,510 lines) | `src/dtfr.rs` | all routines |
 | `gaminr.f90` (1,517 lines) | `src/gaminr.rs` | all routines |
+| `groupr.f90` (12,690 lines) | `src/groupr/` (`mod.rs`, `weight.rs`, `core.rs`, `mf6.rs`, `dist.rs`, `conver.rs`) and `src/groupr_tables.rs` (group structures and weight functions, made from the Fortran by a script) | all routines; the Madland-Nix spectrum (MF5 LF=12 in `anased`, which needs `e1` and `gami`) stops with a message |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -396,7 +419,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
-`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr` and `--` cards; any other module name
+`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -457,6 +480,11 @@ CPUs; 1 turns them off). The output is the same for any value.
    **GAMINR corpus**: the GAMINR calls of tests 03 and 30, and
    `tools/make_variants_gaminr.py` adds 33 variants (RECONR, and for the
    input-tape cases a first GAMINR run, by the Fortran, then GAMINR).
+   **GROUPR corpus**: the GROUPR calls of the test suite (the module
+   chain up to each call is run by the Fortran), and
+   `tools/make_variants_groupr.py` adds 115 variants (MODER, RECONR,
+   BROADR and sometimes UNRESR, THERMR or a first GROUPR run by the
+   Fortran, then GROUPR).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -580,6 +608,30 @@ purpose:
   (`ngam1`), because it takes `math=1` as the tape header. It then reads
   to the end of the file and stops with a runtime error. The port does the
   same (case `in_mat1`).
+* GROUPR's options to add MTs to a material on an input gout tape do not
+  work in NJOY2016: `matb<0` on card 2 is not made positive (findf fails);
+  `matb<0` on card 10 skips the old material on the input tape and then
+  reads past the end of it (runtime error); `matb<0` with no input gout
+  tape takes the tape label as the first material. The port does the same
+  (cases `out_add1`, `out_add`, `out_all`).
+* GROUPR with an incident charged particle and a request for MF3 MT2
+  (for example the automatic `3/` list) makes the Fortran `getmf6` clear
+  one column of the feed-function array for each group, but that array
+  has only 2 words for MF3. This writes past the array, corrupts the heap,
+  and the Fortran stops with `free(): invalid pointer`. The port does not
+  copy this; no case here uses it.
+* GROUPR with incident photons (photonuclear data) above the top neutron
+  group: the `jgmax` search in `getmf6` reads past the end of the group
+  bounds. The port stops the search at the end of the array. The value is
+  used only for an upscatter correction that does not apply to these
+  cases.
+* GROUPR reads three locals that are not set on every path: `ehigh` in
+  `panel` (a jump to label 115 from the lower boundary), `lcd` in the
+  normal entry of `getgfl`, and `x1`, `x2` in the Kalbach branch of
+  `f6ddx` outside the tabulated range. The port uses the value of the last
+  call, 1, and the last value. No case here shows a difference.
+* GROUPR's Madland-Nix fission spectrum (MF5 LF=12) is not ported (no
+  test file has it); the port stops with a message there.
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.

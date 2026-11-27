@@ -6,6 +6,8 @@ pub mod endf;
 pub mod farr;
 pub mod ffmt;
 pub mod gaspr;
+pub mod groupr;
+pub mod groupr_tables;
 pub mod heatr;
 pub mod leapr;
 pub mod mixr;

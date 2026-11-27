@@ -83,10 +83,14 @@ CD="$W/corpus-dtfr"
 python3 "$R/tools/build_corpus.py" "$N" "$CD" --module dtfr
 CDV="$W/corpus-dtfr-var"
 python3 "$R/tools/make_variants_dtfr.py" "$N" "$W/dtfr-work" "$CDV"
-CG="$W/corpus-gaminr"
-python3 "$R/tools/build_corpus.py" "$N" "$CG" --module gaminr
-CGV="$W/corpus-gaminr-var"
-python3 "$R/tools/make_variants_gaminr.py" "$N" "$CGV"
+CGM="$W/corpus-gaminr"
+python3 "$R/tools/build_corpus.py" "$N" "$CGM" --module gaminr
+CGMV="$W/corpus-gaminr-var"
+python3 "$R/tools/make_variants_gaminr.py" "$N" "$CGMV"
+CGR="$W/corpus-groupr"
+python3 "$R/tools/build_corpus.py" "$N" "$CGR" --module groupr
+CGRV="$W/corpus-groupr-var"
+python3 "$R/tools/make_variants_groupr.py" "$N" "$CGRV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -132,9 +136,13 @@ python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CD" "$W/compare-dtfr"
 echo "   dtfr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CDV" "$W/compare-dtfr-var" | tail -1
 echo "   gaminr:"
-python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CG" "$W/compare-gaminr" | tail -1
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGM" "$W/compare-gaminr" | tail -1
 echo "   gaminr variants:"
-python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGV" "$W/compare-gaminr-var" | tail -1
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGMV" "$W/compare-gaminr-var" | tail -1
+echo "   groupr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGR" "$W/compare-groupr" | tail -1
+echo "   groupr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGRV" "$W/compare-groupr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -222,7 +230,11 @@ CDA="$W/corpus-dtfr-all"
 mkdir -p "$CDA"
 for d in "$CD"/* "$CDV"/*; do [ -e "$CDA/$(basename "$d")" ] || ln -s "$d" "$CDA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CDA" "$W/coverage-dtfr" dtfr
-CGA="$W/corpus-gaminr-all"
-mkdir -p "$CGA"
-for d in "$CG"/* "$CGV"/*; do [ -e "$CGA/$(basename "$d")" ] || ln -s "$d" "$CGA/$(basename "$d")"; done
-bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CGA" "$W/coverage-gaminr" gaminr
+CGMA="$W/corpus-gaminr-all"
+mkdir -p "$CGMA"
+for d in "$CGM"/* "$CGMV"/*; do [ -e "$CGMA/$(basename "$d")" ] || ln -s "$d" "$CGMA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CGMA" "$W/coverage-gaminr" gaminr
+CGRA="$W/corpus-groupr-all"
+mkdir -p "$CGRA"
+for d in "$CGR"/* "$CGRV"/*; do [ -e "$CGRA/$(basename "$d")" ] || ln -s "$d" "$CGRA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CGRA" "$W/coverage-groupr" groupr
