@@ -1,15 +1,15 @@
 //! `njoy-reconr`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR,
-//! UNRESR, GASPR, PURR, LEAPR, MIXR and RESXSR modules of NJOY2016.
+//! UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR and DTFR modules of NJOY2016.
 //!
 //! Usage is the same as `njoy`: the input deck is read from standard input,
 //! the listing is written to the file `output`, terminal messages go to
 //! standard output, and ENDF/PENDF tapes are `tapeNN` files in the current
 //! directory. Only the `moder`, `reconr`, `broadr`, `heatr`, `thermr`,
-//! `unresr`, `gaspr`, `purr`, `leapr`, `mixr` and `resxsr`
-//! modules (and `--` comment cards)
+//! `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr` and
+//! `dtfr` modules (and `--` comment cards)
 //! are supported.
 
-use reconr_rs::{broadr, endf, ffmt, fio, gaspr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
+use reconr_rs::{broadr, dtfr, endf, ffmt, fio, gaspr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
 
 use std::io::Read;
 
@@ -63,6 +63,7 @@ fn main() {
     let mut lp = leapr::Leapr::new();
     let mut mx = mixr::Mixr::new();
     let mut rx = resxsr::Resxsr::new();
+    let mut dt = dtfr::Dtfr::new();
     loop {
         let v = ctx.io.input.read(&[fio::Kind::Char(6)]);
         // a null value leaves the variable unchanged (blank on first read)
@@ -107,6 +108,9 @@ fn main() {
             }
             "resxsr" => {
                 rx.resxsr(&mut ctx);
+            }
+            "dtfr" => {
+                dt.dtfr(&mut ctx);
             }
             "--" => {}
             _ => {

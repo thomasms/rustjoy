@@ -79,6 +79,10 @@ CXV="$W/corpus-mixr-var"
 python3 "$R/tools/make_variants_mixr.py" "$N" "$CXV"
 CRV="$W/corpus-resxsr-var"
 python3 "$R/tools/make_variants_resxsr.py" "$N" "$CRV"
+CD="$W/corpus-dtfr"
+python3 "$R/tools/build_corpus.py" "$N" "$CD" --module dtfr
+CDV="$W/corpus-dtfr-var"
+python3 "$R/tools/make_variants_dtfr.py" "$N" "$W/dtfr-work" "$CDV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -119,6 +123,10 @@ echo "   mixr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CXV" "$W/compare-mixr-var" | tail -1
 echo "   resxsr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CRV" "$W/compare-resxsr-var" | tail -1
+echo "   dtfr:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CD" "$W/compare-dtfr" | tail -1
+echo "   dtfr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CDV" "$W/compare-dtfr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -202,3 +210,7 @@ for d in "$CL"/* "$CLV"/*; do [ -e "$CLA/$(basename "$d")" ] || ln -s "$d" "$CLA
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CLA" "$W/coverage-leapr" leapr
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CXV" "$W/coverage-mixr" mixr
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CRV" "$W/coverage-resxsr" resxsr
+CDA="$W/corpus-dtfr-all"
+mkdir -p "$CDA"
+for d in "$CD"/* "$CDV"/*; do [ -e "$CDA/$(basename "$d")" ] || ln -s "$d" "$CDA/$(basename "$d")"; done
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CDA" "$W/coverage-dtfr" dtfr

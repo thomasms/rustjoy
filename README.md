@@ -1,10 +1,10 @@
 # rustjoy
 
 A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
-**UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR** and **RESXSR** modules of
-[NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`, version
-2016.80), with a harness that checks them against the Fortran program byte
-for byte.
+**UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR**, **RESXSR** and **DTFR**
+modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
+version 2016.80), with a harness that checks them against the Fortran
+program byte for byte.
 
 * MODER converts ENDF-type tapes between text and blocked-binary form, and
   selects materials from one or more tapes onto a new tape.
@@ -37,6 +37,10 @@ for byte.
 * RESXSR writes a RESXS file (binary, CCCC-like): the elastic, fission
   and capture cross sections of several materials and temperatures on
   one thinned energy grid, for hyper-fine flux calculations.
+* DTFR converts multigroup data from a GENDF tape (GROUPR or GAMINR
+  output) into DTF-format transport tables (text or CLAW format), and can
+  write plot commands for PLOTR (group values and PENDF curves, and
+  isometric plots of the scattering and photon production tables).
 
 ## Speed
 
@@ -181,6 +185,19 @@ code cannot reach (the array limit and an uninitialised `gety`).
 Fortran line coverage of the 18 cases: `resxsr.f90` 211 of 212
 executable lines run (**99.5%**). The line not run sets the ENDF-5 format
 flag; no test file gives an ENDF-5 PENDF tape.
+
+## Results: DTFR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| The DTFR run of the NJOY2016 test suite (test 03, on GAMINR output) | 1 | **1** |
+| Variants on GROUPR output of tests 01, 02, 07, 08 and 30 and of U-235 with delayed neutrons (MT455, MF5): edits, thermal tables (MT229/230), upscatter, Legendre orders, photon production tables, CLAW format, plot commands (none, 1 and 4 plots per frame, plots in the listing with `nplot=0`), up to 11 MTs in one edit position, temperature and sigma-zero choice, a material that is not on the tape, binary tapes, two materials in one run; U photoatomic data (ENDF-6) through GAMINR; 5 error exits | 32 | **32** |
+
+Fortran line coverage of the 33 cases: `dtfr.f90` 902 of 912 executable
+lines run (**98.9%**). What is not run: the three storage-limit errors,
+the MT19-after-MT18 and delayed-nubar errors, a GENDF header longer than
+one page, and the zero padding of a CLAW photon table (the number of
+neutron by photon groups is always a multiple of 6 here).
 
 ## Results: PURR
 
@@ -332,9 +349,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `leapr.f90` (3,625 lines) | `src/leapr.rs` | all routines |
 | `mixr.f90` (533 lines) | `src/mixr.rs` | all routines |
 | `resxsr.f90` (505 lines) | `src/resxsr.rs` | all routines |
+| `dtfr.f90` (1,510 lines) | `src/dtfr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -360,7 +378,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
-`gaspr`, `purr`, `leapr`, `mixr`, `resxsr` and `--` cards; any other module name
+`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -414,6 +432,10 @@ CPUs; 1 turns them off). The output is the same for any value.
    **RESXSR corpus**: no test calls RESXSR either, so
    `tools/make_variants_resxsr.py` makes all 18 cases (RECONR and
    sometimes BROADR or MODER by the Fortran, then RESXSR).
+   **DTFR corpus**: the same for the one DTFR call (test 03), and
+   `tools/make_variants_dtfr.py` adds 32 variants (the module chain of a
+   test up to its GROUPR run, or RECONR, BROADR, GROUPR or GAMINR, by the
+   Fortran, then DTFR).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -530,6 +552,9 @@ purpose:
   If more than 50 points in a row are inside the tolerance, the Fortran
   writes past the array. The port uses a larger array, so it can differ
   from the Fortran in that case. No case here keeps more than 50.
+* DTFR with `nplot=0` writes its plot commands to unit 0, which is the
+  listing (`nsyso` is `ERROR_UNIT`, connected to `output`). The port
+  writes them to the listing too.
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.

@@ -1,5 +1,6 @@
 //! Rust port of NJOY2016 modules (RECONR, BROADR).
 pub mod broadr;
+pub mod dtfr;
 pub mod endf;
 pub mod farr;
 pub mod ffmt;
