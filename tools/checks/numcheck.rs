@@ -1,6 +1,6 @@
 //! Prints the results of the basic numeric routines for every input value,
 //! in the same layout as tools/numcheck.f90, for byte comparison.
-use reconr_rs::{endf, ffmt, fmath, util};
+use rustjoy::{endf, ffmt, fmath, util};
 use std::io::{Read, Write};
 
 fn main() {

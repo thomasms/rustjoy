@@ -1,0 +1,11 @@
+# NJOY2016 results for this example, checked by tests/examples.rs.
+# Made with NJOY2016 commit ab27c64 (gfortran, CMake defaults, Linux x86-64).
+# Each file line: SHA-256 of the masked bytes, length in bytes, file name.
+exit 0
+9feea3662def5a2ce9fabe7fdba5835e622430f87a1c0e6beaf5289efa5ad501 28707 output
+bef58308c7771ff0702ec7f90a3b85becc9713e27d608e6a36e6fb9d5e47e6ed 832 stdout
+0624b2f4cd2617cb6ebace9e281fb7d17b70f472a1431c0e5c8492a81a924b4e 62064 tape21
+fb10049638fdcd0a5b8d1431b85eefc5132ef927460b75c600936ae0ebb83131 18876 tape22
+628a1b2104f909591401975fc12ad94e44808df667a61eee3b457f5aec2829dd 18876 tape23
+fc04315248287676e37e8be5ec4b6dc5a832f05335f28b17ea76015327ad54c2 43254 tape31
+fc04315248287676e37e8be5ec4b6dc5a832f05335f28b17ea76015327ad54c2 43254 tape32

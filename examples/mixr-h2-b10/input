@@ -1,0 +1,23 @@
+-- MIXR: a mixture of 99% H-2 and 1% B-10 (atom fractions).
+-- RECONR makes a PENDF tape for each material, then MIXR makes the
+-- mixed total, elastic and capture cross sections on tape40.
+reconr
+ 20 21/
+ 'pendf tape for h-2'/
+ 128 0/
+ .001/
+ 0/
+reconr
+ 30 31/
+ 'pendf tape for b-10'/
+ 525 0/
+ .001/
+ 0/
+mixr
+ 40 21 31/
+ 1 2 102/
+ 128 .99 525 .01/
+ 0./
+ 9999 0. 1./
+ '99% h-2 and 1% b-10 (atom fractions)'/
+stop

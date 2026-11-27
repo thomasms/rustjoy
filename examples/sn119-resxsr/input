@@ -1,0 +1,23 @@
+-- RESXSR: a RESXS resonance cross section file for Sn-119.
+-- RECONR and BROADR make a PENDF tape at two temperatures, then
+-- RESXSR writes the elastic, fission and capture cross sections
+-- from 1 eV to 1 keV to the binary file tape30.
+reconr
+ 20 21/
+ 'pendf tape for sn-119'/
+ 5046 0/
+ .001/
+ 0/
+broadr
+ 20 21 22/
+ 5046 2 0 0 0./
+ .001/
+ 293.6 600./
+ 0/
+resxsr
+ 30/
+ 1 2 1 1. 1000. .001/
+ 'rustjoy example' 1/
+ 'sn-119 from endf/b-viii.0'/
+ 'sn119' 5046 22/
+stop

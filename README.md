@@ -96,7 +96,7 @@ What changed (none of it changes a floating-point operation or its order):
 * **Fewer allocations:** `sigma` reuses its work arrays (zeroed each call,
   as a new allocation would be); Fortran `I`, `F`, `E` editing and the
   ENDF number reading build their text on the stack. The old routines are
-  kept, and `examples/ffmt_check.rs` checks the new ones against them on
+  kept, and `tools/checks/ffmt_check.rs` checks the new ones against them on
   110,998,901 random and edge-case inputs (all identical); `numcheck`
   (against gfortran) is unchanged.
 * **Parallel prefetch** (`src/prefetch.rs`). RECONR `resxs` and BROADR
@@ -420,7 +420,7 @@ The program is used like `njoy`: the input deck comes from standard input,
 the listing goes to `output`, tapes are `tapeNN` files:
 
 ```bash
-./target/release/njoy-reconr < input
+./target/release/rustjoy < input
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
@@ -431,7 +431,41 @@ with the Fortran `njoy` on the same tapes.
 `NJOY_THREADS=n` sets the number of worker threads (default: the number of
 CPUs; 1 turns them off). The output is the same for any value.
 
+[`examples/`](examples) has 11 input decks with their ENDF files, which
+use all 14 ported modules, and tells how to run them.
+
+## Tests
+
+`tests/examples.rs` runs each deck in `examples/` with rustjoy and
+compares the results with NJOY2016 byte for byte: the exit status,
+standard output, the listing `output` and every tape that the deck writes.
+
+```bash
+cargo test --release
+```
+
+This needs no Fortran: it compares with the NJOY2016 results stored in
+`examples/*/reference.txt` (a SHA-256 checksum of each output file). The
+references were made with NJOY2016 commit `ab27c64`, built with its CMake
+defaults (gfortran -O0) on Linux x86-64. On another platform, a different
+libm can change the last bit of some results.
+
+To run NJOY2016 on the same decks and compare the files directly (a
+difference is then shown with the first line that differs), give the path
+to an `njoy` program:
+
+```bash
+NJOY=/path/to/njoy cargo test --release --test examples
+```
+
+The debug build (`cargo test`) gives the same results, but it is about
+six times slower. After a test passes, its work directory in `target/tmp` is
+removed; after a failure, it is kept for inspection.
+
 ## How equivalence is checked
+
+The example tests above are a small, quick check. The full check below
+runs thousands of cases made from the NJOY2016 test suite.
 
 1. **Reference corpus** (`tools/build_corpus.py`): every RECONR call in the
    NJOY2016 test suite (72 calls) becomes a case, in two forms: the original
@@ -491,7 +525,7 @@ CPUs; 1 turns them off). The output is the same for any value.
    BROADR and sometimes UNRESR, THERMR or a first GROUPR run by the
    Fortran, then GROUPR).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
-   `njoy` and with `njoy-reconr` in separate directories. Every tape written,
+   `njoy` and with `rustjoy` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
    **byte for byte**. Only these bytes are masked, because they differ between
    two runs of the Fortran program itself:
@@ -501,9 +535,9 @@ CPUs; 1 turns them off). The output is the same for any value.
      uninitialised memory (`equivalence` of `character(4)` and `real(kr)`
      arrays). They never appear in ASCII tapes.
 6. **Numeric kernels** (`tools/numcheck_gen.py`, `tools/numcheck.f90`,
-   `examples/numcheck.rs`): 2,009,128 edge-case and seeded random values go
+   `tools/checks/numcheck.rs`): 2,009,128 edge-case and seeded random values go
    through both languages and the outputs are compared byte for byte. For
-   BROADR, `tools/numcheck_broadr.f90` and `examples/numcheck_broadr.rs` do
+   BROADR, `tools/numcheck_broadr.f90` and `tools/checks/numcheck_broadr.rs` do
    the same for `erfc` and `hnabb` (`numcheck_gen.py broadr`).
 7. **Threads**: `compare.py` also compares the port with `NJOY_THREADS=1`
    against the port with the default thread count, for every case.

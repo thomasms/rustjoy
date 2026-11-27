@@ -1,17 +1,31 @@
 [package]
-name = "reconr-rs"
+name = "rustjoy"
 version = "0.1.0"
 edition = "2021"
-description = "Rust port of the RECONR module of NJOY2016"
+description = "Rust port of the MODER, RECONR, BROADR, HEATR, THERMR, UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR and GROUPR modules of NJOY2016"
 license = "BSD-3-Clause"
 
 [lib]
-name = "reconr_rs"
+name = "rustjoy"
 path = "src/lib.rs"
 
 [[bin]]
-name = "njoy-reconr"
+name = "rustjoy"
 path = "src/main.rs"
+
+# Check programs for the numeric kernels (see tools/run_all.sh). They are
+# not usage examples: the examples are the NJOY input decks in examples/.
+[[example]]
+name = "ffmt_check"
+path = "tools/checks/ffmt_check.rs"
+
+[[example]]
+name = "numcheck"
+path = "tools/checks/numcheck.rs"
+
+[[example]]
+name = "numcheck_broadr"
+path = "tools/checks/numcheck_broadr.rs"
 
 [dependencies]
 

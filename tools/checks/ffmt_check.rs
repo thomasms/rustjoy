@@ -2,7 +2,7 @@
 //! reference versions they replaced (which were checked against gfortran).
 //! Prints the number of cases and exits with status 1 on the first mismatch.
 //! Usage: ffmt_check [N_RANDOM]
-use reconr_rs::ffmt;
+use rustjoy::ffmt;
 
 struct Rng(u64);
 impl Rng {
@@ -127,7 +127,7 @@ fn main() {
             }
         } else {
             let x = value(&mut r);
-            let t = if x.is_finite() { reconr_rs::endf::a11s(x) } else { format!("{}", x) };
+            let t = if x.is_finite() { rustjoy::endf::a11s(x) } else { format!("{}", x) };
             f.extend_from_slice(t.as_bytes());
         }
         let d = if r.below(4) == 0 { r.below(6) as usize } else { 0 };

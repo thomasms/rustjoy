@@ -33,7 +33,7 @@ build "$W/njoy-fix" "$W/njoy-fix-src"
 
 echo "== build the Rust port"
 (cd "$R" && CARGO_TARGET_DIR="$W/target" cargo build --release -q)
-RUST="$W/target/release/njoy-reconr"
+RUST="$W/target/release/rustjoy"
 
 echo "== make the corpus"
 C="$W/corpus"
