@@ -1,8 +1,8 @@
 # rustjoy
 
 A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
-**UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR**, **RESXSR** and **DTFR**
-modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
+**UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR**, **RESXSR**, **DTFR** and
+**GAMINR** modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
 version 2016.80), with a harness that checks them against the Fortran
 program byte for byte.
 
@@ -41,6 +41,10 @@ program byte for byte.
   output) into DTF-format transport tables (text or CLAW format), and can
   write plot commands for PLOTR (group values and PENDF curves, and
   isometric plots of the scattering and photon production tables).
+* GAMINR makes multigroup photon interaction cross sections, scattering
+  matrices and heating kerma factors from ENDF photon data (MF23 cross
+  sections and MF27 form factors) and a PENDF tape, and writes them on a
+  GENDF tape.
 
 ## Speed
 
@@ -199,6 +203,19 @@ the MT19-after-MT18 and delayed-nubar errors, a GENDF header longer than
 one page, and the zero padding of a CLAW photon table (the number of
 neutron by photon groups is always a multiple of 6 here).
 
+## Results: GAMINR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| Every GAMINR run in the NJOY2016 test suite (tests 03 and 30), binary and ASCII forms | 3 | **3** |
+| Variants: all 10 group structures (one read-in structure with 320 groups, so that records are longer than one page, and one that ends below the pair threshold), the three weight options, Legendre orders 0 to 8, both print options, explicit reaction lists, no output tape, binary output, two GAMINR runs in one deck, an input GAMINR tape (material lower, equal and higher), H, Fe and U together (the incoherent matrix of the lowest Z is used again for higher Z), H and U photoatomic data (ENDF-6, MT522/525); 5 error exits and one end-of-file stop | 33 | **33** |
+
+Fortran line coverage of the 36 cases: `gaminr.f90` 806 of 814 executable
+lines run (**99.0%**). What is not run: the ENDF-5 format flag (no ENDF-5
+photon file), the form-factor storage error, one exit of the incoherent
+panel loop, and code that is not reachable (6-point quadrature in
+`gpanel`, more than one page of total heating values for one group).
+
 ## Results: PURR
 
 | Check | Cases | Identical |
@@ -350,9 +367,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `mixr.f90` (533 lines) | `src/mixr.rs` | all routines |
 | `resxsr.f90` (505 lines) | `src/resxsr.rs` | all routines |
 | `dtfr.f90` (1,510 lines) | `src/dtfr.rs` | all routines |
+| `gaminr.f90` (1,517 lines) | `src/gaminr.rs` | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -378,7 +396,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
-`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr` and `--` cards; any other module name
+`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -436,6 +454,9 @@ CPUs; 1 turns them off). The output is the same for any value.
    `tools/make_variants_dtfr.py` adds 32 variants (the module chain of a
    test up to its GROUPR run, or RECONR, BROADR, GROUPR or GAMINR, by the
    Fortran, then DTFR).
+   **GAMINR corpus**: the GAMINR calls of tests 03 and 30, and
+   `tools/make_variants_gaminr.py` adds 33 variants (RECONR, and for the
+   input-tape cases a first GAMINR run, by the Fortran, then GAMINR).
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `njoy-reconr` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -555,6 +576,10 @@ purpose:
 * DTFR with `nplot=0` writes its plot commands to unit 0, which is the
   listing (`nsyso` is `ERROR_UNIT`, connected to `output`). The port
   writes them to the listing too.
+* GAMINR skips every record of material 1 on an input GAMINR tape
+  (`ngam1`), because it takes `math=1` as the tape header. It then reads
+  to the end of the file and stops with a runtime error. The port does the
+  same (case `in_mat1`).
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.

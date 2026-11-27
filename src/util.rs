@@ -29,6 +29,7 @@ pub mod physics {
     pub const TNRATIO: f64 = AMASST / AMASSN;
     pub const HNRATIO: f64 = AMASSH / AMASSN;
     pub const ANRATIO: f64 = AMASSA / AMASSN;
+    pub const EPAIR: f64 = AMASSE * AMU * CLIGHT * CLIGHT / EV;
 }
 
 /// `sigfig(x,ndig,idig)`: round x to ndig significant figures and add idig in

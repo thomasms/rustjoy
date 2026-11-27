@@ -5,11 +5,11 @@
 //! the listing is written to the file `output`, terminal messages go to
 //! standard output, and ENDF/PENDF tapes are `tapeNN` files in the current
 //! directory. Only the `moder`, `reconr`, `broadr`, `heatr`, `thermr`,
-//! `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr` and
-//! `dtfr` modules (and `--` comment cards)
+//! `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`,
+//! `dtfr` and `gaminr` modules (and `--` comment cards)
 //! are supported.
 
-use reconr_rs::{broadr, dtfr, endf, ffmt, fio, gaspr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
+use reconr_rs::{broadr, dtfr, endf, ffmt, fio, gaminr, gaspr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
 
 use std::io::Read;
 
@@ -64,6 +64,7 @@ fn main() {
     let mut mx = mixr::Mixr::new();
     let mut rx = resxsr::Resxsr::new();
     let mut dt = dtfr::Dtfr::new();
+    let mut gm = gaminr::Gaminr::new();
     loop {
         let v = ctx.io.input.read(&[fio::Kind::Char(6)]);
         // a null value leaves the variable unchanged (blank on first read)
@@ -111,6 +112,9 @@ fn main() {
             }
             "dtfr" => {
                 dt.dtfr(&mut ctx);
+            }
+            "gaminr" => {
+                gm.gaminr(&mut ctx);
             }
             "--" => {}
             _ => {
