@@ -1,6 +1,6 @@
 //! Prints erfc(x) and hnabb(n,a,b), n=0..4, in hex for each (x,a,b) triple
 //! on standard input, in the layout of tools/numcheck_broadr.f90.
-use reconr_rs::{broadr::hnabb, mathm::erfc};
+use rustjoy::{broadr::hnabb, mathm::erfc};
 use std::io::{Read, Write};
 
 fn main() {

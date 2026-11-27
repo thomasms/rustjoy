@@ -1,4 +1,4 @@
-//! `njoy-reconr`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR,
+//! `rustjoy`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR,
 //! UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR and GROUPR
 //! modules of NJOY2016.
 //!
@@ -10,7 +10,7 @@
 //! `dtfr`, `gaminr` and `groupr` modules (and `--` comment cards)
 //! are supported.
 
-use reconr_rs::{broadr, dtfr, endf, ffmt, fio, gaminr, gaspr, groupr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
+use rustjoy::{broadr, dtfr, endf, ffmt, fio, gaminr, gaspr, groupr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
 
 use std::io::Read;
 

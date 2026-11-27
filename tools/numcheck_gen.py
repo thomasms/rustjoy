@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Write the input of the numeric-kernel check (tools/numcheck.f90 and
-examples/numcheck.rs) to standard output: pairs of (real(8) x, int32 n),
+tools/checks/numcheck.rs) to standard output: pairs of (real(8) x, int32 n),
 little endian. Edge cases first, then 2,000,000 seeded random values.
 With the argument "broadr": (x, a, b) real(8) triples for the BROADR
 kernels instead (tools/numcheck_broadr.f90)."""
