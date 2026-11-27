@@ -3,7 +3,7 @@ name = "rustjoy"
 version = "0.1.0"
 edition = "2021"
 description = "Rust port of the MODER, RECONR, BROADR, HEATR, THERMR, UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR and GROUPR modules of NJOY2016"
-license = "BSD-3-Clause"
+license = "MIT AND BSD-3-Clause"
 
 [lib]
 name = "rustjoy"
