@@ -11,6 +11,9 @@
 #   njoy-cov   the same with gcov counters (--coverage)
 #   njoy-fix   the reference plus tools/njoy-sigp5-init.patch, used only for
 #              the synthetic Adler-Adler / hybrid cases (see README)
+#   njoy-pfix  the reference plus tools/njoy-powr-cards.patch (and its gcov
+#              build njoy-pfix-cov), used only for the POWR k_* cases,
+#              against the port built with --features powr-cards
 set -e
 N=$(cd "$1" && pwd); W=$2
 R=$(cd "$(dirname "$0")/.." && pwd)
@@ -30,10 +33,18 @@ cp -r "$N/CMakeLists.txt" "$N/src" "$N/metaconfigure" "$W/njoy-fix-src/"
 ln -s "$N/tests" "$W/njoy-fix-src/tests"
 (cd "$W/njoy-fix-src" && patch -p1 < "$R/tools/njoy-sigp5-init.patch" > /dev/null)
 build "$W/njoy-fix" "$W/njoy-fix-src"
+mkdir -p "$W/njoy-pfix-src"
+cp -r "$N/CMakeLists.txt" "$N/src" "$N/metaconfigure" "$W/njoy-pfix-src/"
+ln -s "$N/tests" "$W/njoy-pfix-src/tests"
+(cd "$W/njoy-pfix-src" && patch -p1 < "$R/tools/njoy-powr-cards.patch" > /dev/null)
+build "$W/njoy-pfix" "$W/njoy-pfix-src"
+build "$W/njoy-pfix-cov" "$W/njoy-pfix-src" -DCMAKE_Fortran_FLAGS=--coverage
 
 echo "== build the Rust port"
 (cd "$R" && CARGO_TARGET_DIR="$W/target" cargo build --release -q)
 RUST="$W/target/release/rustjoy"
+(cd "$R" && CARGO_TARGET_DIR="$W/target-cards" cargo build --release -q --features powr-cards)
+RUSTC="$W/target-cards/release/rustjoy"
 
 echo "== make the corpus"
 C="$W/corpus"
@@ -91,6 +102,10 @@ CGR="$W/corpus-groupr"
 python3 "$R/tools/build_corpus.py" "$N" "$CGR" --module groupr
 CGRV="$W/corpus-groupr-var"
 python3 "$R/tools/make_variants_groupr.py" "$N" "$CGRV"
+CPWV="$W/corpus-powr-var"
+python3 "$R/tools/make_variants_powr.py" "$N" "$CPWV"
+CPWK="$W/corpus-powr-cards"
+python3 "$R/tools/make_variants_powr.py" --cards "$N" "$CPWK"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -143,6 +158,10 @@ echo "   groupr:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGR" "$W/compare-groupr" | tail -1
 echo "   groupr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CGRV" "$W/compare-groupr-var" | tail -1
+echo "   powr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CPWV" "$W/compare-powr-var" | tail -1
+echo "   powr lib=3 with the card-5 patch (patched Fortran, port with --features powr-cards):"
+python3 "$R/tools/compare.py" "$W/njoy-pfix/njoy" "$RUSTC" "$CPWK" "$W/compare-powr-cards" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -238,3 +257,7 @@ CGRA="$W/corpus-groupr-all"
 mkdir -p "$CGRA"
 for d in "$CGR"/* "$CGRV"/*; do [ -e "$CGRA/$(basename "$d")" ] || ln -s "$d" "$CGRA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CGRA" "$W/coverage-groupr" groupr
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CPWV" "$W/coverage-powr" powr
+bash "$R/tools/coverage.sh" "$W/njoy-pfix-cov" "$CPWK" "$W/coverage-powr-cards" powr
+python3 "$R/tools/gcov_union.py" "$W/coverage-powr/powr.f90.gcov" \
+  "$W/coverage-powr-cards/powr.f90.gcov" "$R/tools/njoy-powr-cards.patch"

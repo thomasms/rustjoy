@@ -29,6 +29,11 @@ path = "tools/checks/numcheck_broadr.rs"
 
 [dependencies]
 
+[features]
+# Test only: POWR lib=3 stores its card-5 values and lambdas where it reads
+# them back, as NJOY2016 with tools/njoy-powr-cards.patch does (see README).
+powr-cards = []
+
 [profile.release]
 # Keep floating-point semantics plain: no fast-math exists in Rust, and we keep
 # overflow-checks off to match Fortran's wrapping integer arithmetic.

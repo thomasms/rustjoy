@@ -2,7 +2,7 @@
 
 A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
 **UNRESR**, **GASPR**, **PURR**, **LEAPR**, **MIXR**, **RESXSR**, **DTFR**,
-**GAMINR** and **GROUPR** modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
+**GAMINR**, **GROUPR** and **POWR** modules of [NJOY2016](https://github.com/njoy/NJOY2016) (commit `ab27c64`,
 version 2016.80), with a harness that checks them against the Fortran
 program byte for byte.
 
@@ -51,6 +51,11 @@ program byte for byte.
   spectra, photon and charged-particle production matrices, and nuclide
   production, with 36 neutron and 10 photon group structures, 12 weight
   functions and a flux calculator. It writes a GENDF tape.
+* POWR formats multigroup data from a GENDF tape as input for the
+  EPRI-CELL codes GAMTAP (fast library, 68 groups, lib=1) and LIBRAR
+  (thermal library, 35 groups, lib=2), and for the EPRI-CPM code CLIB
+  (69 groups, lib=3). A 185-group GENDF tape is collapsed to these
+  structures.
 
 ## Speed
 
@@ -238,6 +243,40 @@ data in `getco`; ENDF-5 charged-particle MT numbers; the temperature
 search of `getfwt` for a second temperature; the recoil branch of
 `gam102`; and the unresolved sigma-zero warnings.
 
+## Results: POWR
+
+| Check | Cases | Identical |
+| --- | --- | --- |
+| No NJOY2016 test uses POWR. Variants: lib=1 (carbon, U-235 with fission and delayed neutrons, Be-9, Pu-238 with unresolved self-shielding; one and two temperatures, up to three sigma zeroes, f-factors on and off, a reference temperature that is not the first, the reference sigma zero and sigma-zero limit, two materials, two POWR runs in one deck, 185-group collapse, ASCII GENDF, negative `nout`), lib=2 (carbon, U-235, H-1 free gas from THERMR; transport correction, two temperatures and two materials, 185-group collapse, two runs), lib=3 (burnup data, modes 1 and 2, 185-group collapse, two materials, a negative mat, a lib=3 run after a lib=1 run); 15 error exits | 44 | **44** |
+| lib=3 against NJOY2016 with `tools/njoy-powr-cards.patch`, the port built with `--features powr-cards` (see below): subfiles 2 to 5 and the CLIB output, with materials from the tape (nina 0 and 1) and from the input (nina 2 and 3), modes 0, 1 and 2, burnup data, one and two temperatures, a reference sigma zero, no resonance fission; one of the 13 stops with the same runtime error in both programs | 13 | **13** |
+
+Fortran line coverage: the 44 cases run 1,568 of 3,021 executable lines of
+`powr.f90` (51.9%); the unpatched program cannot get past subfile 2 of
+lib=3 (see below). Counting also the lines that the 13 patched cases run
+(`tools/gcov_union.py` maps them back through the patch), 2,658 of the
+3,021 lines (**88.0%**) are run by a compared case. What is not run:
+`sfile6` and `sf6out` after their first records and subfile 6 of the CLIB
+output (`sfile6` never finds a P1 matrix, see Known limits), the
+absorption-only input of lib=1 (unreachable, see Known limits), and
+storage and input errors.
+
+### Why POWR lib=3 is also checked against a patched NJOY2016
+
+In stock NJOY2016, lib=3 reads card 5 of each material into local
+variables but then takes the values from the scratch array `scr` (zero in
+the first POWR run), and it never stores the resonance lambdas. Every
+material is then treated as `nina=0` with sigma zero 0, and `sfile2` stops
+("reference sigma zero not found"), so subfiles 2 to 6 cannot be compared
+with real input. `tools/njoy-powr-cards.patch` makes three changes for the
+comparison only: it stores the card-5 values and the lambdas where the
+code reads them back; it allocates `tempt` in `sfile4` also when there are
+resonance materials (otherwise an unallocated array is written); and it
+changes the continuation format of the P0 matrix print in `sf4out` from
+`(9x,i4,2x,1p,5e12.4)` to `(14x,1p,5e12.4)` (the `i4` gets a real number,
+which stops the program for every matrix row longer than 5 groups). The
+Rust feature `powr-cards` makes the same three changes; the default build
+has none of them and matches stock NJOY2016.
+
 ## Results: PURR
 
 | Check | Cases | Identical |
@@ -391,9 +430,10 @@ versions), which is why synthetic data was needed to test them at all.
 | `dtfr.f90` (1,510 lines) | `src/dtfr.rs` | all routines |
 | `gaminr.f90` (1,517 lines) | `src/gaminr.rs` | all routines |
 | `groupr.f90` (12,690 lines) | `src/groupr/` (`mod.rs`, `weight.rs`, `core.rs`, `mf6.rs`, `dist.rs`, `conver.rs`) and `src/groupr_tables.rs` (group structures and weight functions, made from the Fortran by a script) | all routines; the Madland-Nix spectrum (MF5 LF=12 in `anased`, which needs `e1` and `gami`) stops with a message |
+| `powr.f90` (4,902 lines) | `src/powr/` (`mod.rs`: main routine and the fast library; `therm.rs`; `cpm.rs` and `cpm4.rs`: the CPM library) | all routines |
 | `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
 | `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr`) |
+| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr`, `powr`) |
 | — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
 | gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
@@ -419,7 +459,7 @@ the listing goes to `output`, tapes are `tapeNN` files:
 ```
 
 Decks may contain `moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`,
-`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr` and `--` cards; any other module name
+`gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr`, `powr` and `--` cards; any other module name
 stops with `illegal module name`. For other modules in a chain, run them
 with the Fortran `njoy` on the same tapes.
 
@@ -519,6 +559,11 @@ runs thousands of cases made from the NJOY2016 test suite.
    `tools/make_variants_groupr.py` adds 115 variants (MODER, RECONR,
    BROADR and sometimes UNRESR, THERMR or a first GROUPR run by the
    Fortran, then GROUPR).
+   **POWR corpus**: no test calls POWR, so `tools/make_variants_powr.py`
+   makes all 44 cases (MODER, RECONR, BROADR and sometimes UNRESR or
+   THERMR, then GROUPR for the 68-, 35-, 69- and 185-group structures, by
+   the Fortran, then POWR). With `--cards` it makes the 13 lib=3 cases
+   for the patched Fortran and the `powr-cards` build.
 5. **Comparison** (`tools/compare.py`): each case is run with the Fortran
    `njoy` and with `rustjoy` in separate directories. Every tape written,
    the listing `output`, standard output and the exit status are compared
@@ -666,6 +711,37 @@ purpose:
   call, 1, and the last value. No case here shows a difference.
 * GROUPR's Madland-Nix fission spectrum (MF5 LF=12) is not ported (no
   test file has it); the port stops with a message there.
+* POWR lib=1: a negative `matd` (absorption read from the input) ends the
+  material loop, because the loop test `matd.gt.0` comes before the sign
+  is used. The absorption-only code is ported but never runs, in both
+  programs.
+* POWR lib=3 takes the card-5 values from `scr` (see Results: POWR). In a
+  later POWR run of the same deck they are what the earlier run left
+  there; the port keeps `scr` between runs, so case `c_after_fast` is
+  identical. After a lib=2 run those values send `pinit` past its
+  material search and the Fortran prints its group-bound array without
+  setting it; that is not copied (no case uses it).
+* POWR lib=3, undefined behaviour that is not copied: mode 0 with
+  position 0 (from `scr`) uses `iflgs(0)` and `idnto(0)`, outside the
+  arrays (the port keeps one word for `iflgs(0)` and uses 0 for
+  `idnto(0)`); `indf` is printed but set only when a material has
+  `ires=1`; the group bounds are unset when the first material is not on
+  the GENDF tape; `sfile3` reads `flxr` and `flux` before their start when
+  the first temperature has a zero flux (the port uses 0); `sfile4` writes
+  the unallocated `tempt` when there are resonance materials (the Fortran
+  crashes, the port panics). No compared case reaches these.
+* POWR runtime errors that are copied (same message, exit status 2, and,
+  as in libgfortran, the record being written is lost): the P0 matrix
+  print in `sf4out` for rows longer than 5 groups, the `i6` edit of a real
+  in the burnup input (`if5=2`), a second lib=3 run in one deck (its
+  arrays are still allocated), and lib=3 with no `nina` 0 or 3 material and
+  no `ires=1` (deallocation of `glamt`, which was not allocated).
+* POWR `sfile6` jumps to `tosend` after the first record of every MF6
+  section, so it never finds a P1 matrix and stops with "no required p1
+  matrices found" for a material with `nina=0` and `ip1opt=0`; `sfile3`
+  writes resonance integrals only for `nina>0`, so CLIB output with a
+  `nina=0`, `ires=1` material fails with a runtime error. The port does
+  the same.
 * BROADR's `ctev` is reset to 0 for every energy point, so the "thermal
   capture g-factor" line almost never appears. That is NJOY2016's
   behaviour, and the port copies it.

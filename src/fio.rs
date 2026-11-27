@@ -360,6 +360,13 @@ impl Io {
         u.pos >= u.recs.len()
     }
 
+    /// True when the next formatted read of unit nun would hit the end
+    /// of file (Fortran `END=`).
+    pub fn line_eof(&mut self, nun: i32) -> bool {
+        let u = self.unit(nun, true);
+        u.pos >= u.recs.len()
+    }
+
     pub fn write_rec(&mut self, nun: i32, rec: RecW) {
         let u = self.unit(nun, false);
         u.recs.truncate(u.pos);

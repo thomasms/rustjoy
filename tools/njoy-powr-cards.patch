@@ -1,0 +1,49 @@
+--- a/src/powr.f90
++++ b/src/powr.f90
+@@ -2086,6 +2086,18 @@
+       write(nsyso,'(i4,i5,i6,1p,e12.2,i4,e11.3,2i4,i4,2i5,i4)')&
+         nina,ntemp,nsigz,sgref,ires,sigp,mti,mtc,&
+         ip1opt,norf,ipos,iposr
++      scr(iscr+k)=nina
++      scr(iscr+k+1)=ntemp
++      scr(iscr+k+2)=nsigz
++      scr(iscr+k+3)=sgref
++      scr(iscr+k+4)=ires
++      scr(iscr+k+5)=sigp
++      scr(iscr+k+6)=mti
++      scr(iscr+k+7)=mtc
++      scr(iscr+k+8)=ip1opt
++      scr(iscr+k+9)=norf
++      scr(iscr+k+10)=ipos
++      scr(iscr+k+11)=iposr
+       k=k+12
+    enddo
+    if (if5.ne.0) then
+@@ -2208,6 +2220,9 @@
+             glamt(i+nn*(j-1))=0
+          enddo
+          read(nsysi,*) (scr(jscr+k-1),k=1,nrg)
++         do j=1,nrg
++            glamt(i+nn*(j-1))=scr(jscr+j-1)
++         enddo
+       enddo
+    endif
+    k=0
+@@ -3253,7 +3268,7 @@
+    allocate(tot(ngnd))
+    allocate(xtr(ngnd))
+    nw=nt+1
+-   if (nres.eq.0) allocate(tempt(nw))
++   allocate(tempt(nw))
+    nwloc=ngnd*6+ngndsq
+    allocate(a(nwloc))
+    iloc=1
+@@ -4026,7 +4041,7 @@
+       i1=lim+1
+       lim=nb
+       if ((lim-i1+1).gt.ncol) lim=i1+ncol-1
+-      write(nsyso,'(9x,i4,2x,1p,5e12.4)') (b(i),i=i1,lim)
++      write(nsyso,'(14x,1p,5e12.4)') (b(i),i=i1,lim)
+    enddo
+   130 continue
+    read(mscr) ia

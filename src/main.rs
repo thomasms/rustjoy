@@ -1,16 +1,16 @@
 //! `rustjoy`: a Rust port of the MODER, RECONR, BROADR, HEATR, THERMR,
-//! UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR and GROUPR
-//! modules of NJOY2016.
+//! UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR, GROUPR and
+//! POWR modules of NJOY2016.
 //!
 //! Usage is the same as `njoy`: the input deck is read from standard input,
 //! the listing is written to the file `output`, terminal messages go to
 //! standard output, and ENDF/PENDF tapes are `tapeNN` files in the current
 //! directory. Only the `moder`, `reconr`, `broadr`, `heatr`, `thermr`,
 //! `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`,
-//! `dtfr`, `gaminr` and `groupr` modules (and `--` comment cards)
+//! `dtfr`, `gaminr`, `groupr` and `powr` modules (and `--` comment cards)
 //! are supported.
 
-use rustjoy::{broadr, dtfr, endf, ffmt, fio, gaminr, gaspr, groupr, heatr, leapr, mixr, moder, purr, reconr, resxsr, thermr, unresr, util};
+use rustjoy::{broadr, dtfr, endf, ffmt, fio, gaminr, gaspr, groupr, heatr, leapr, mixr, moder, powr, purr, reconr, resxsr, thermr, unresr, util};
 
 use std::io::Read;
 
@@ -67,6 +67,7 @@ fn main() {
     let mut dt = dtfr::Dtfr::new();
     let mut gm = gaminr::Gaminr::new();
     let mut gr = groupr::Groupr::new();
+    let mut pw = powr::Powr::new();
     loop {
         let v = ctx.io.input.read(&[fio::Kind::Char(6)]);
         // a null value leaves the variable unchanged (blank on first read)
@@ -117,6 +118,9 @@ fn main() {
             }
             "groupr" => {
                 gr.groupr(&mut ctx);
+            }
+            "powr" => {
+                pw.powr(&mut ctx);
             }
             "gaminr" => {
                 gm.gaminr(&mut ctx);
