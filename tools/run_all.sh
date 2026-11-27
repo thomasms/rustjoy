@@ -77,6 +77,8 @@ CLV="$W/corpus-leapr-var"
 python3 "$R/tools/make_variants_leapr.py" "$CLV"
 CXV="$W/corpus-mixr-var"
 python3 "$R/tools/make_variants_mixr.py" "$N" "$CXV"
+CRV="$W/corpus-resxsr-var"
+python3 "$R/tools/make_variants_resxsr.py" "$N" "$CRV"
 
 echo "== compare Fortran and Rust, byte for byte"
 echo "   reconr:"
@@ -115,6 +117,8 @@ echo "   leapr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CLV" "$W/compare-leapr-var" | tail -1
 echo "   mixr variants:"
 python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CXV" "$W/compare-mixr-var" | tail -1
+echo "   resxsr variants:"
+python3 "$R/tools/compare.py" "$W/njoy-ref/njoy" "$RUST" "$CRV" "$W/compare-resxsr-var" | tail -1
 echo "   synthetic cases against the patched Fortran:"
 python3 "$R/tools/compare.py" "$W/njoy-fix/njoy" "$RUST" "$C" "$W/compare-fix" \
   syn_aa7 syn_aa7_t syn_aa5 syn_aa6_t syn_hy syn_hy_t | tail -1
@@ -197,3 +201,4 @@ mkdir -p "$CLA"
 for d in "$CL"/* "$CLV"/*; do [ -e "$CLA/$(basename "$d")" ] || ln -s "$d" "$CLA/$(basename "$d")"; done
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CLA" "$W/coverage-leapr" leapr
 bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CXV" "$W/coverage-mixr" mixr
+bash "$R/tools/coverage.sh" "$W/njoy-cov" "$CRV" "$W/coverage-resxsr" resxsr

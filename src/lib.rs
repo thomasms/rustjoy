@@ -16,5 +16,6 @@ pub mod purr;
 pub mod thermr;
 pub mod unresr;
 pub mod reconr;
+pub mod resxsr;
 pub mod samm;
 pub mod util;
