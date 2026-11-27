@@ -6,6 +6,11 @@ A Rust port of the **MODER**, **RECONR**, **BROADR**, **HEATR**, **THERMR**,
 version 2016.80), with a harness that checks them against the Fortran
 program byte for byte.
 
+> **Note:** rustjoy is a modified, derivative version of NJOY2016. It is not
+> the NJOY2016 release that is available from Los Alamos National Laboratory
+> (LANL), and LANL, the U.S. Department of Energy and the U.S. Government did
+> not make, support or endorse it. See [License](#license).
+
 * MODER converts ENDF-type tapes between text and blocked-binary form, and
   selects materials from one or more tapes onto a new tape.
 * RECONR reconstructs pointwise cross sections from ENDF resonance
@@ -639,3 +644,12 @@ purpose:
   (as they are in the other routines); hybrid data with l > 4 is not tested.
 * Only Linux x86-64 with glibc was tested. Another libm can change the last
   bit of transcendental functions in both programs differently.
+
+## License
+
+rustjoy is a derivative work of [NJOY2016](https://github.com/njoy/NJOY2016),
+which is Copyright (c) 2016, Los Alamos National Security, LLC. The changes
+and new code in rustjoy are released under the BSD 3-Clause license. The
+original NJOY2016 license continues to apply to the parts derived from
+NJOY2016. Both licenses are in [LICENSE](LICENSE). If you distribute rustjoy,
+in source or binary form, include that file.
