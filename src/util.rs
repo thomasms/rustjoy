@@ -40,6 +40,102 @@ pub fn sigfig(x: f64, ndig: i32, idig: i32) -> f64 {
     let ten = 10.0f64;
     let mut xx = 0.0f64;
     if x != zero {
+        let ipwr0 = match floor_log10(x.abs()) {
+            Some(k) => k,
+            None => return sigfig_ref(x, ndig, idig),
+        };
+        let mut ipwr = ndig - 1 - ipwr0;
+        let p = |n: i32| pow10_tab(n).unwrap_or_else(|| powi(ten, n));
+        let mut ii = nint(x * p(ipwr) + p(ndig - 11));
+        const IP10: [i32; 10] = [1, 10, 100, 1000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000];
+        let top = if (0..10).contains(&ndig) { IP10[ndig as usize] } else { ipow(10, ndig) };
+        if ii >= top {
+            ii /= 10;
+            ipwr -= 1;
+        }
+        ii += idig;
+        xx = ii as f64 * p(-ipwr);
+    }
+    xx = xx * bias;
+    xx
+}
+
+/// The `ipwr` of `sigfig` before `ndig` (`int(log10(ax))`, less 1 when
+/// the log is negative) for finite, normal ax > 0, without the log. It is
+/// floor(log10(ax)), found from a table of powers of ten. None when ax is
+/// within a relative 1e-9 of a power of ten (where the rounded log10 could
+/// be the integer itself) or is not normal: the caller then uses the log.
+/// Away from the powers of ten, the log10 of glibc (error below 1 ulp, so
+/// below 1e-13 here) cannot cross an integer, so both give the same value.
+#[inline]
+fn floor_log10(ax: f64) -> Option<i32> {
+    if !(ax.is_normal()) {
+        return None;
+    }
+    let t = tables();
+    let e2 = ((ax.to_bits() >> 52) & 0x7ff) as i32 - 1023;
+    // e2*log10(2) <= log10(ax) < (e2+1)*log10(2), which spans less than 1
+    // floor(e2*log10(2)) for |e2| < 1700 (78913/2^18 is log10(2) to 1e-7)
+    let mut k = (e2 * 78913) >> 18;
+    let idx = |k: i32| (k + P10_OFF) as usize;
+    if k < -P10_OFF || k + 1 > P10_OFF {
+        return None;
+    }
+    if ax >= t.p10[idx(k + 1)] {
+        k += 1;
+        if k + 1 > P10_OFF {
+            return None;
+        }
+    }
+    let lo = t.p10[idx(k)];
+    let hi = t.p10[idx(k + 1)];
+    if ax < lo || ax >= hi {
+        return None;
+    }
+    const REL: f64 = 1.0e-9;
+    if ax - lo <= REL * lo || hi - ax <= REL * hi {
+        return None;
+    }
+    Some(k)
+}
+
+const P10_OFF: i32 = 330;
+const POW_OFF: i32 = 400;
+
+struct Tabs {
+    /// 10^k, correctly rounded, for k = -P10_OFF..=P10_OFF
+    p10: Vec<f64>,
+    /// powi(10, n) (the Fortran `ten**n`), for n = -POW_OFF..=POW_OFF
+    pw: Vec<f64>,
+}
+
+fn tables() -> &'static Tabs {
+    static T: std::sync::OnceLock<Tabs> = std::sync::OnceLock::new();
+    T.get_or_init(|| Tabs {
+        p10: (-P10_OFF..=P10_OFF).map(|k| format!("1e{}", k).parse::<f64>().unwrap()).collect(),
+        pw: (-POW_OFF..=POW_OFF).map(|n| powi(10.0, n)).collect(),
+    })
+}
+
+/// powi(10, n) from the table (the same bits), or None outside it.
+#[inline]
+fn pow10_tab(n: i32) -> Option<f64> {
+    if (-POW_OFF..=POW_OFF).contains(&n) {
+        Some(tables().pw[(n + POW_OFF) as usize])
+    } else {
+        None
+    }
+}
+
+/// The original `sigfig`, as in the Fortran (log10 and `ten**n`). It is the
+/// reference for `sigfig` (see tools/checks/ffmt_check.rs) and its path
+/// for the inputs that the table does not cover.
+pub fn sigfig_ref(x: f64, ndig: i32, idig: i32) -> f64 {
+    let bias = 1.0000000000001e0f64;
+    let zero = 0.0f64;
+    let ten = 10.0f64;
+    let mut xx = 0.0f64;
+    if x != zero {
         let aa = log10(x.abs());
         let mut ipwr = int(aa);
         if aa < zero {

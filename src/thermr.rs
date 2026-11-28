@@ -1557,6 +1557,36 @@ struct Sab {
     /// `first_above` can use a binary search
     alpha_up: bool,
     beta_up: bool,
+    /// For each S(alpha,beta) cell (ia, ib), ia = 1..nalpha-2: the `terpq`
+    /// values in alpha that depend only on the table (the step test and the
+    /// quadratic coefficients b and c), computed once with the same
+    /// operations; index (ia-1) + (nalpha-2)*(ib-1). Empty if not used.
+    qa: std::sync::Arc<Vec<(f64, f64, bool)>>,
+}
+
+/// The `qa` table of `Sab` (see there): for each cell, the step test and
+/// the coefficients b and c of `terpq`, with the same operations in the
+/// same order. Empty when nalpha < 3.
+fn terpq_table(alpha: &RV, sab: &[f64], nalpha: i32, nbeta: i32) -> Vec<(f64, f64, bool)> {
+    const STEP: f64 = 2.0e0;
+    if nalpha < 3 || nbeta < 1 {
+        return Vec::new();
+    }
+    let s = |ia: i32, ib: i32| sab[((ia - 1) + nalpha * (ib - 1)) as usize];
+    let mut t = Vec::with_capacity(((nalpha - 2) * nbeta) as usize);
+    for ib in 1..=nbeta {
+        for ia in 1..=nalpha - 2 {
+            let (x1, x2, x3) = (alpha[ia], alpha[ia + 1], alpha[ia + 2]);
+            let (y1, y2, y3) = (s(ia, ib), s(ia + 1, ib), s(ia + 2, ib));
+            let step = (y1 - y2).abs() > STEP || (y2 - y3).abs() > STEP;
+            let mut b = (y2 - y1) * (x3 - x1) / ((x2 - x1) * (x3 - x2));
+            b -= (y3 - y1) * (x2 - x1) / ((x3 - x1) * (x3 - x2));
+            let mut c = (y3 - y1) / ((x3 - x1) * (x3 - x2));
+            c -= (y2 - y1) / ((x2 - x1) * (x3 - x2));
+            t.push((b, c, step));
+        }
+    }
+    t
 }
 
 /// The loop `do i=1,n1; k=i; if (x.lt.v(i+1)) exit; enddo` (k=0 if n1<1):
@@ -1588,6 +1618,34 @@ fn ascending(v: &RV, n: i32) -> bool {
 
 const SABFLG: f64 = -225.0e0;
 
+/// What `sig` keeps from one call to the next within one `sigl` or `sigu`:
+/// the beta index for the last beta (the same bits give the same index) and
+/// the last alpha index, which is tried first (see `first_above_from`).
+#[derive(Clone, Copy)]
+struct SigCache {
+    bkey: u64,
+    ib: i32,
+    ia: i32,
+}
+
+impl SigCache {
+    fn new() -> Self {
+        // bkey: a NaN pattern that a beta of sig cannot have
+        SigCache { bkey: 0x7ff8_dead_beef_0001, ib: 0, ia: 0 }
+    }
+}
+
+/// `first_above(v, n1, x, up)`, trying index h first: with v(2..n1+1)
+/// ascending, h is the answer when x is not below v(h) (or h = 1) and x
+/// is below v(h+1) (or h = n1); else the full search.
+#[inline]
+fn first_above_from(v: &RV, n1: i32, x: f64, up: bool, h: i32) -> i32 {
+    if up && h >= 1 && h <= n1 && (h == 1 || !(x < v[h])) && (h == n1 || x < v[h + 1]) {
+        return h;
+    }
+    first_above(v, n1, x, up)
+}
+
 impl Sab {
     #[inline]
     fn s(&self, ia: i32, ib: i32) -> f64 {
@@ -1596,6 +1654,12 @@ impl Sab {
 
     /// `sig`: the double-differential scattering cross section.
     fn sig(&self, e: f64, ep: f64, u: f64, tev: f64) -> f64 {
+        self.sig_c(e, ep, u, tev, &mut SigCache::new())
+    }
+
+    /// `sig`, with the search results kept in sc between calls (the result
+    /// is the same as `sig`).
+    fn sig_c(&self, e: f64, ep: f64, u: f64, tev: f64, sc: &mut SigCache) -> f64 {
         const SIGMIN: f64 = 1.0e-10;
         const AMIN: f64 = 1.0e-6;
         const TEST1: f64 = 0.2e0;
@@ -1662,8 +1726,15 @@ impl Sab {
             if self.lasym == 1 && bb < ZERO {
                 bbb = -b;
             }
-            let mut ib = first_above(beta, nb1, bbb, self.beta_up);
-            let mut ia = first_above(alpha, na1, a, self.alpha_up);
+            let mut ib = if sc.bkey == bbb.to_bits() {
+                sc.ib
+            } else {
+                let ib = first_above(beta, nb1, bbb, self.beta_up);
+                (sc.bkey, sc.ib) = (bbb.to_bits(), ib);
+                ib
+            };
+            let mut ia = first_above_from(alpha, na1, a, self.alpha_up, sc.ia);
+            sc.ia = ia;
             if !(self.cliq == ZERO || a >= alpha[1]) && self.lasym != 1 && !(b > TEST1) {
                 s = self.s(1, 1) + log(alpha[1] / a) / 2.0 - self.cliq * (b * b) / a;
                 if s < SABFLG {
@@ -1689,25 +1760,9 @@ impl Sab {
             if ib + 1 == nbeta {
                 ib -= 1;
             }
-            let s1 = self.terpq(alpha[ia], self.s(ia, ib), alpha[ia + 1], self.s(ia + 1, ib), alpha[ia + 2], self.s(ia + 2, ib), a);
-            let s2 = self.terpq(
-                alpha[ia],
-                self.s(ia, ib + 1),
-                alpha[ia + 1],
-                self.s(ia + 1, ib + 1),
-                alpha[ia + 2],
-                self.s(ia + 2, ib + 1),
-                a,
-            );
-            let s3 = self.terpq(
-                alpha[ia],
-                self.s(ia, ib + 2),
-                alpha[ia + 1],
-                self.s(ia + 1, ib + 2),
-                alpha[ia + 2],
-                self.s(ia + 2, ib + 2),
-                a,
-            );
+            let s1 = self.terpq_a(ia, ib, a);
+            let s2 = self.terpq_a(ia, ib + 1, a);
+            let s3 = self.terpq_a(ia, ib + 2, a);
             s = self.terpq(beta[ib], s1, beta[ib + 1], s2, beta[ib + 2], s3, bbb);
         }
         if !go170 {
@@ -1753,6 +1808,51 @@ impl Sab {
     }
 
     /// `terpq`: quadratic interpolation with checks.
+    /// `terpq` in alpha at column ib, over alpha(ia..ia+2), with the values
+    /// of `qa` (the same result as `terpq`, which it calls when the cell is
+    /// not in the table).
+    #[inline]
+    fn terpq_a(&self, ia: i32, ib: i32, x: f64) -> f64 {
+        const STEP: f64 = 2.0e0;
+        let na2 = self.nalpha - 2;
+        let alpha = &self.alpha;
+        let (x1, x2, x3) = (alpha[ia], alpha[ia + 1], alpha[ia + 2]);
+        let (y1, y2, y3) = (self.s(ia, ib), self.s(ia + 1, ib), self.s(ia + 2, ib));
+        if ia < 1 || ia > na2 || ib < 1 || ib > self.nbeta {
+            return self.terpq(x1, y1, x2, y2, x3, y3, x);
+        }
+        let Some(&(b, c, step)) = self.qa.get(((ia - 1) + na2 * (ib - 1)) as usize) else {
+            return self.terpq(x1, y1, x2, y2, x3, y3, x);
+        };
+        debug_assert_eq!(step, (y1 - y2).abs() > STEP || (y2 - y3).abs() > STEP);
+        let mut y = 0.0f64;
+        if x < x1 {
+            if y1 > y2 {
+                y = y1;
+            } else {
+                crate::endf::terp1(x1, y1, x2, y2, x, &mut y, 3, self.thr6);
+            }
+        } else if x > x3 {
+            if y3 > y2 {
+                y = y3;
+            } else {
+                crate::endf::terp1(x2, y2, x3, y3, x, &mut y, 2, self.thr6);
+            }
+        } else if step {
+            if x < x2 {
+                crate::endf::terp1(x1, y1, x2, y2, x, &mut y, 2, self.thr6);
+            } else {
+                crate::endf::terp1(x2, y2, x3, y3, x, &mut y, 2, self.thr6);
+            }
+        } else {
+            y = y1 + b * (x - x1) + c * (x - x1) * (x - x1);
+        }
+        if y < SABFLG {
+            y = SABFLG;
+        }
+        y
+    }
+
     fn terpq(&self, x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64, x: f64) -> f64 {
         const STEP: f64 = 2.0e0;
         let mut y = 0.0f64;
@@ -1827,17 +1927,30 @@ impl Sab {
             sigfig(x2, 8, 0)
         };
 
+        // Pass 2 below ("prime the adaptive integration") divides mu exactly
+        // as pass 1 does: the same end points and, while it runs, the same
+        // midpoints in the same order (its bins move only xl and yl, never
+        // the x, y stack). sig depends only on its arguments, so pass 2 takes
+        // each value from pass 1: the midpoint before sigfig (compared bit
+        // for bit), then xm and sig(xm). A midpoint that does not match is
+        // computed as before.
+        let mut sc = SigCache::new();
+        const NREC: usize = 192;
+        let mut rec = [(0u64, 0.0f64, 0.0f64); NREC];
+        let mut nrec = 0usize;
+
         //--adaptive calculation of cross section
         let mut i = 3usize;
         let mut sum = 0.0f64;
         x[3] = -1.0;
         let mut xl = x[3];
-        y[3] = self.sig(e, ep, x[3], tev);
+        y[3] = self.sig_c(e, ep, x[3], tev, &mut sc);
         let mut yl = y[3];
         x[2] = x2_of(seep);
-        y[2] = self.sig(e, ep, x[2], tev);
+        y[2] = self.sig_c(e, ep, x[2], tev, &mut sc);
         x[1] = 1.0;
-        y[1] = self.sig(e, ep, x[1], tev);
+        y[1] = self.sig_c(e, ep, x[1], tev, &mut sc);
+        let ends = (y[3], x[2], y[2], y[1]);
         let mut ymax = y[2];
         if y[1] > ymax {
             ymax = y[1];
@@ -1853,10 +1966,14 @@ impl Sab {
             if at110 {
                 // label 110
                 if i != IMAX {
-                    let mut xm = HALF * (x[i - 1] + x[i]);
-                    xm = sigfig(xm, 8, 0);
+                    let xr = HALF * (x[i - 1] + x[i]);
+                    let xm = sigfig(xr, 8, 0);
                     let ym = HALF * (y[i - 1] + y[i]);
-                    let yt = self.sig(e, ep, xm, tev);
+                    let yt = self.sig_c(e, ep, xm, tev, &mut sc);
+                    if nrec < NREC {
+                        rec[nrec] = (xr.to_bits(), xm, yt);
+                        nrec += 1;
+                    }
                     let test = tol * yt.abs() + tol * ymax / 50.0;
                     let test2 = ym + ymax / 100.0;
                     let conv = (yt - ym).abs() <= test && (y[i - 1] - y[i]).abs() <= test2 && (x[i - 1] - x[i]) < HALF;
@@ -1908,11 +2025,10 @@ impl Sab {
         i = 3;
         x[3] = -1.0;
         xl = x[3];
-        y[3] = self.sig(e, ep, x[3], tev);
-        x[2] = x2_of(seep);
-        y[2] = self.sig(e, ep, x[2], tev);
+        // the same three points as in pass 1
+        (y[3], x[2], y[2], y[1]) = ends;
         x[1] = 1.0;
-        y[1] = self.sig(e, ep, x[1], tev);
+        let mut irec = 0usize;
         ymax = y[1];
         if y[2] > ymax {
             ymax = y[2];
@@ -1935,10 +2051,16 @@ impl Sab {
                     if i == IMAX {
                         continue;
                     }
-                    let mut xm = HALF * (x[i - 1] + x[i]);
-                    xm = sigfig(xm, 8, 0);
+                    let xr = HALF * (x[i - 1] + x[i]);
+                    let (xm, yt) = if irec < nrec && rec[irec].0 == xr.to_bits() {
+                        irec += 1;
+                        (rec[irec - 1].1, rec[irec - 1].2)
+                    } else {
+                        irec = NREC;
+                        let xm = sigfig(xr, 8, 0);
+                        (xm, self.sig_c(e, ep, xm, tev, &mut sc))
+                    };
                     let ym = HALF * (y[i - 1] + y[i]);
-                    let yt = self.sig(e, ep, xm, tev);
                     let test = tol * yt.abs() + tol * ymax / 50.0;
                     let test2 = ym + ymax / 100.0;
                     if (yt - ym).abs() <= test && (y[i - 1] - y[i]).abs() <= test2 && (x[i - 1] - x[i]) < HALF {
@@ -2086,10 +2208,11 @@ impl Sab {
         for i in 1..=(2 * nemax) as usize {
             s[i] = 0.0;
         }
+        let mut sc = SigCache::new();
         let root1 = (u * sqrt(e) + sqrt(u * u * e + (az - 1.0) * (az + 1.0) * e)) / (az + 1.0);
         let mut sum = 0.0f64;
         x[1] = 0.0;
-        y[1] = self.sig(e, x[1], u, tev);
+        y[1] = self.sig_c(e, x[1], u, tev, &mut sc);
         let mut jbeta = -nbeta;
         if self.lasym > 0 {
             jbeta = 1;
@@ -2137,7 +2260,7 @@ impl Sab {
                         x[1] = r2;
                     }
                     x[1] = sigfig(x[1], 8, 0);
-                    y[1] = self.sig(e, x[1], u, tev);
+                    y[1] = self.sig_c(e, x[1], u, tev, &mut sc);
                     i = 2;
                     st = 150;
                 }
@@ -2155,7 +2278,7 @@ impl Sab {
                         continue;
                     }
                     let ym = HALF * (y[i - 1] + y[i]);
-                    let yt = self.sig(e, xm, u, tev);
+                    let yt = self.sig_c(e, xm, u, tev, &mut sc);
                     let test = tol * yt.abs();
                     if (yt - ym).abs() <= test {
                         continue;
@@ -3049,9 +3172,11 @@ impl Thermr {
         let tev = t * BK;
         let alpha_up = ascending(&alpha, nalpha);
         let beta_up = ascending(&beta, nbeta);
+        let qa = std::sync::Arc::new(if self.iinc == 2 { terpq_table(&alpha, &sab, nalpha, nbeta) } else { Vec::new() });
         let mut sp = Sab {
             alpha_up,
             beta_up,
+            qa,
             nalpha,
             nbeta,
             alpha,

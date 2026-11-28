@@ -163,5 +163,62 @@ fn main() {
         }
         count += 3;
     }
+    // sigfig (table of powers of ten) against sigfig_ref (log10 and ten**n)
+    let sf = |x: f64, nd: i32, id: i32| {
+        let a = rustjoy::util::sigfig(x, nd, id);
+        let b = rustjoy::util::sigfig_ref(x, nd, id);
+        if a.to_bits() != b.to_bits() {
+            fail(&format!("sigfig({:e},{},{})", x, nd, id), &format!("{:e}", a), &format!("{:e}", b));
+        }
+    };
+    for _ in 0..20_000_000u64 {
+        let x = match r.below(3) {
+            0 => value(&mut r),
+            // energies in eV, as the modules use them
+            1 => 10f64.powf(r.below(1_000_000_000) as f64 * 1e-8 - 5.0),
+            // any positive finite value
+            _ => f64::from_bits(r.next() >> 2),
+        };
+        let nd = match r.below(4) {
+            0 => 7,
+            1 => 8,
+            2 => 9,
+            _ => 1 + r.below(15) as i32,
+        };
+        sf(x, nd, r.below(3) as i32 - 1);
+        count += 1;
+    }
+    // nint without libm against x.round()
+    for _ in 0..20_000_000u64 {
+        let x = match r.below(4) {
+            0 => value(&mut r),
+            1 => (r.below(2_000_001) as f64 - 1_000_000.0) / 2.0,
+            2 => f64::from_bits(r.next()),
+            _ => {
+                let v = (r.next() >> 11) as f64 * 2f64.powi(r.below(64) as i32 - 52);
+                let v = f64::from_bits((v.to_bits() as i64 + r.below(5) as i64 - 2) as u64);
+                if r.below(2) == 0 { v } else { -v }
+            }
+        };
+        let (a, b) = (rustjoy::fmath::nint(x), rustjoy::fmath::nint_ref(x));
+        if a != b {
+            fail(&format!("nint({:e})", x), &a.to_string(), &b.to_string());
+        }
+        count += 1;
+    }
+    // the values next to each power of ten, where log10 can round to it
+    for k in -310..=310 {
+        let p: f64 = format!("1e{}", k).parse().unwrap();
+        for d in -3000i64..=3000 {
+            let x = f64::from_bits((p.to_bits() as i64 + d) as u64);
+            for nd in [7, 8, 9] {
+                for id in [-1, 0, 1] {
+                    sf(x, nd, id);
+                    sf(-x, nd, id);
+                    count += 2;
+                }
+            }
+        }
+    }
     println!("ffmt_check: {} cases identical", count);
 }

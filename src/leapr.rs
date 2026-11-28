@@ -481,6 +481,11 @@ impl Leapr {
         for k in 1..=np {
             tlast[k] = p[k];
         }
+        // terpt(t, be) depends on beta only: once per beta, not per alpha
+        let mut stk = vec![0.0f64; nbeta.max(0) as usize + 1];
+        for k in 1..=nbeta {
+            stk[k as usize] = terpt(&p, np, deltab, self.beta[k] * sc);
+        }
         for j in 1..=nalpha {
             let al = self.alpha[j] * sc / arat;
             xa[j] = log(al * f0);
@@ -490,8 +495,7 @@ impl Leapr {
                 exx = exp(ex);
             }
             for k in 1..=nbeta {
-                let be = self.beta[k] * sc;
-                let st = terpt(&p, np, deltab, be);
+                let st = stk[k as usize];
                 let mut add = st * exx;
                 if add < tiny {
                     add = 0.0;
@@ -525,6 +529,9 @@ impl Leapr {
             if iprint == 2 {
                 c.io.so(&format!("     {}{}", i(n, 5), f(ckk, 12, 5)));
             }
+            for k in 1..=nbeta {
+                stk[k as usize] = terpt(&tnow, npn, deltab, self.beta[k] * sc);
+            }
             for j in 1..=nalpha {
                 let al = self.alpha[j] * sc / arat;
                 xa[j] = xa[j] + log(al * f0 / n as f64);
@@ -534,8 +541,7 @@ impl Leapr {
                     exx = exp(ex);
                 }
                 for k in 1..=nbeta {
-                    let be = self.beta[k] * sc;
-                    let st = terpt(&tnow, npn, deltab, be);
+                    let st = stk[k as usize];
                     let mut add = st * exx;
                     if add < tiny {
                         add = 0.0;
@@ -2461,7 +2467,12 @@ fn convol(t1: &RV, tlast: &RV, tnext: &mut RV, n1: i32, nl: i32, nn: i32, delta:
         tnext[k] = tk;
         let mut cc = tk;
         let be = (k - 1) as f64 * delta;
-        cc = cc + tk * exp(-be);
+        // etab[m] is exp(-(m*delta)): the same operations
+        let eb = match etab.get((k - 1) as usize) {
+            Some(&v) => v,
+            None => exp(-be),
+        };
+        cc = cc + tk * eb;
         if k == 1 || k == nn {
             cc = cc / 2.0;
         }
