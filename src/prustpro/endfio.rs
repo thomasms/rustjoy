@@ -904,12 +904,13 @@ impl ErrCom {
 
 /// /MAXIECOM/ state.
 pub struct Maxie {
-    xmaxie: Vec<f64>,
-    ymaxie: Vec<f64>,
+    /// /MAXIECOM/ (1-based; MIXER reads XMAXIE and YMAXIE directly).
+    pub xmaxie: Vec<f64>,
+    pub ymaxie: Vec<f64>,
     matm: Vec<i32>,
     mfm: Vec<i32>,
     mtm: Vec<i32>,
-    maxie: usize,
+    pub maxie: usize,
     mypass: i32,
     mygoof: i32,
     pub xminimum: f64,

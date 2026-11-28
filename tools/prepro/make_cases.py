@@ -271,8 +271,70 @@ def convert_cases(src_dir, out):
         n += 1
     print(n, 'cases')
 
+def combine(paths, dst):
+    """One tape from several: label of the first, every material, TEND."""
+    with open(dst, 'wb') as h:
+        for k, p in enumerate(paths):
+            lines = open(p, 'rb').read().split(b'\n')
+            if k == 0:
+                h.write(lines[0] + b'\n')
+            for l in lines[1:]:
+                if l[66:70].strip() == b'-1':
+                    break
+                if l:
+                    h.write(l + b'\n')
+        h.write(b' ' * 66 + b'  -1 0  0\n')
+
+def mixer_cases(lin_dir, out):
+    """MIXER: mixtures from linearized tapes (made by LINEAR)."""
+    L = lambda n: os.path.join(lin_dir, n + '.lin')
+    tapes = {
+        'hb': [L('n-001_H_002-ENDF8.0.endf'), L('n-005_B_010-ENDF8.0.endf')],
+        'fesral': [L('n-026_Fe_056-JEFF3.3.endf'), L('n-038_Sr_088-ENDF8.1.endf'), L('n-013_Al_027-ENDF8.0.endf')],
+        'uzr': [L('n-040_Zr_090-ENDF8.0.endf'), L('n-092_U_235-ENDF8.0.endf')],
+        'gam': [L('photoat-001_H_000-ENDF8.0.endf'), L('photoat-092_U_000-ENDF8.0.endf')],
+    }
+    def comp(rows):
+        return ''.join('%11d       %4d%11s\n' % r for r in rows)
+    decks = {
+        'hb-g': ('hb', '      10010  1001 3  1          0\n', [(1002, 1, '0.1'), (5010, 1, '0.9')]),
+        'hb-a': ('hb', '      10010  1001 3  2          1\n', [(1002, 2, '2.0'), (5010, 2, '1.0')]),
+        'hb-102': ('hb', '      10010  1001 3102          0\n', [(1002, 102, '1.0'), (5010, 102, '1.0'), (1002, 102, '0.5')]),
+        'fsa-1': ('fesral', '      99000  9900 3  1          0\n', [(26056, 1, '0.5'), (38088, 1, '.3'), (13027, 1, '2.E-1')]),
+        'fsa-102': ('fesral', '          0     0 0  0          1\n', [(26056, 102, '1.0E+00'), (38088, 102, '1.0'), (13027, 102, '1.0')]),
+        'fsa-miss': ('fesral', '      99000  9900 3  1          0\n', [(26056, 1, '0.5'), (40090, 1, '0.5')]),
+        'fsa-mt': ('fesral', '      99000  9900 3  4          0\n', [(26056, 4, '0.5'), (38088, 999, '0.5')]),
+        'fsa-bad': ('fesral', '      99000  9900 3  1          0\n', [(26056, 1, '0.5'), (38088, 1, '-0.5')]),
+        'fsa-over': ('fesral', '      99000  9900 3  1          0\n', [(26056, 1, '0.1')] * 11),
+        'fsa-ten': ('fesral', '      99000  9900 3  1          0\n', [(26056, 1, '0.1')] * 5 + [(13027, 1, '0.1')] * 5),
+        'fsa-none': ('fesral', '      99000  9900 3  1          0\n', []),
+        'uzr-1': ('uzr', '      92000  9200 3  1          0\n', [(92235, 1, '0.9'), (40090, 1, '0.1')]),
+        'uzr-18': ('uzr', '      92000  9200 3 18          0\n', [(92235, 18, '1.0'), (40090, 18, '1.0')]),
+        'gam-501': ('gam', '      92000  9200 23501          0\n', [(1000, 501, '0.1'), (92000, 501, '0.9')]),
+        'gam-502': ('gam', '      92000  9200 23502          1\n', [(1000, 502, '1.0'), (92000, 502, '1.0')]),
+    }
+    n = 0
+    for name, (tape, outline, rows) in decks.items():
+        case = os.path.join(out, 'mixer', name)
+        os.makedirs(case, exist_ok=True)
+        combine(tapes[tape], os.path.join(case, 'MIX.IN'))
+        text = ('prustpro MIXER test %s\nsecond title line\nMIX.IN\nMIX.OUT\n' % name) + outline + comp(rows) + '\n'
+        write(case, 'MIXER.INP', text)
+        n += 1
+    for name, text in {'noinp': None, 'short': 'title\n', 'eof': 'a\nb\nMIX.IN\nMIX.OUT\n',
+                       'missing': 'a\nb\nNOFILE\nX\n          1     1 3  1          0\n       1002          1        1.0\n\n'}.items():
+        case = os.path.join(out, 'mixer', 'sp-' + name)
+        os.makedirs(case, exist_ok=True)
+        combine(tapes['hb'], os.path.join(case, 'MIX.IN'))
+        if text is not None:
+            write(case, 'MIXER.INP', text)
+        n += 1
+    print(n, 'cases')
+
 def main():
     prog, endf_dir, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    if prog == 'mixer':
+        return mixer_cases(endf_dir, out)
     if prog == 'convert':
         return convert_cases(endf_dir, out)
     if prog == 'relabel':
