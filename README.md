@@ -99,7 +99,7 @@ What changed (none of it changes a floating-point operation or its order):
   kept, and `tools/checks/ffmt_check.rs` checks the new ones against them on
   130,997,261 random and edge-case inputs (all identical); `numcheck`
   (against gfortran) is unchanged.
-* **Parallel prefetch** (`src/prefetch.rs`). RECONR `resxs` and BROADR
+* **Parallel prefetch** (`src/rustjoy/prefetch.rs`). RECONR `resxs` and BROADR
   `broadn` refine an energy grid panel by panel. Worker threads now refine
   the panels ahead of the main program, each with its own copy of the
   data, and keep every cross section they compute. The main program then
@@ -181,7 +181,7 @@ continuation records of long thermal-file records, the second effective
 temperature of mixed-moderator data (`gatef2`), and some limit branches of
 `calcem` and `sig`.
 
-THERMR also needed `acos` from libm, added to `src/fmath.rs`.
+THERMR also needed `acos` from libm, added to `src/rustjoy/fmath.rs`.
 
 ## Results: UNRESR
 
@@ -356,7 +356,7 @@ few rare formats (File 7 MT451, File 15 LF=2, tabulated File 14, some
 File 32 forms). These use the same record routines as the rest.
 
 MODER also needed `intgio` (INTG records of File 32), added to
-`src/endf.rs`.
+`src/rustjoy/endf.rs`.
 
 ## Results: HEATR
 
@@ -459,29 +459,29 @@ versions), which is why synthetic data was needed to test them at all.
 
 | Fortran source | Rust | Notes |
 | --- | --- | --- |
-| `reconr.f90` (5,747 lines) | `src/reconr.rs` | all routines |
-| `samm.f90` (7,169 lines) | `src/samm.rs` | every routine RECONR can reach (LRF=7 R-matrix limited, incl. Coulomb functions and the complex symmetric solver) |
-| `endf.f90` | `src/endf.rs` | ENDF tape I/O, `a11`, interpolation |
-| `util.f90`, `phys.f90` | `src/util.rs` | `sigfig`, `a10`, scratch buffers, constants |
-| `broadr.f90` (1,947 lines) | `src/broadr.rs` | all routines |
-| `moder.f90` (1,714 lines) | `src/moder.rs` | all routines |
-| `heatr.f90` (6,322 lines) | `src/heatr.rs` | all routines |
-| `thermr.f90` (3,387 lines) | `src/thermr.rs` | all routines |
-| `unresr.f90` (1,665 lines) | `src/unresr.rs` | all routines |
-| `gaspr.f90` (1,153 lines) | `src/gaspr.rs` | all routines |
-| `purr.f90` (2,919 lines) | `src/purr.rs` | all routines |
-| `leapr.f90` (3,625 lines) | `src/leapr.rs` | all routines |
-| `mixr.f90` (533 lines) | `src/mixr.rs` | all routines |
-| `resxsr.f90` (505 lines) | `src/resxsr.rs` | all routines |
-| `dtfr.f90` (1,510 lines) | `src/dtfr.rs` | all routines |
-| `gaminr.f90` (1,517 lines) | `src/gaminr.rs` | all routines |
-| `groupr.f90` (12,690 lines) | `src/groupr/` (`mod.rs`, `weight.rs`, `core.rs`, `mf6.rs`, `dist.rs`, `conver.rs`) and `src/groupr_tables.rs` (group structures and weight functions, made from the Fortran by a script) | all routines; the Madland-Nix spectrum (MF5 LF=12 in `anased`, which needs `e1` and `gami`) stops with a message |
-| `powr.f90` (4,902 lines) | `src/powr/` (`mod.rs`: main routine and the fast library; `therm.rs`; `cpm.rs` and `cpm4.rs`: the CPM library) | all routines |
-| `mathm.f90` | `src/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
-| `endf.f90` (`skip6`, `intgio`) | `src/endf.rs` | added for HEATR and MODER |
-| `main.f90` | `src/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr`, `powr`) |
-| — | `src/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
-| gfortran runtime | `src/fio.rs`, `src/ffmt.rs`, `src/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
+| `reconr.f90` (5,747 lines) | `src/rustjoy/reconr.rs` | all routines |
+| `samm.f90` (7,169 lines) | `src/rustjoy/samm.rs` | every routine RECONR can reach (LRF=7 R-matrix limited, incl. Coulomb functions and the complex symmetric solver) |
+| `endf.f90` | `src/rustjoy/endf.rs` | ENDF tape I/O, `a11`, interpolation |
+| `util.f90`, `phys.f90` | `src/rustjoy/util.rs` | `sigfig`, `a10`, scratch buffers, constants |
+| `broadr.f90` (1,947 lines) | `src/rustjoy/broadr.rs` | all routines |
+| `moder.f90` (1,714 lines) | `src/rustjoy/moder.rs` | all routines |
+| `heatr.f90` (6,322 lines) | `src/rustjoy/heatr.rs` | all routines |
+| `thermr.f90` (3,387 lines) | `src/rustjoy/thermr.rs` | all routines |
+| `unresr.f90` (1,665 lines) | `src/rustjoy/unresr.rs` | all routines |
+| `gaspr.f90` (1,153 lines) | `src/rustjoy/gaspr.rs` | all routines |
+| `purr.f90` (2,919 lines) | `src/rustjoy/purr.rs` | all routines |
+| `leapr.f90` (3,625 lines) | `src/rustjoy/leapr.rs` | all routines |
+| `mixr.f90` (533 lines) | `src/rustjoy/mixr.rs` | all routines |
+| `resxsr.f90` (505 lines) | `src/rustjoy/resxsr.rs` | all routines |
+| `dtfr.f90` (1,510 lines) | `src/rustjoy/dtfr.rs` | all routines |
+| `gaminr.f90` (1,517 lines) | `src/rustjoy/gaminr.rs` | all routines |
+| `groupr.f90` (12,690 lines) | `src/rustjoy/groupr/` (`mod.rs`, `weight.rs`, `core.rs`, `mf6.rs`, `dist.rs`, `conver.rs`) and `src/rustjoy/groupr_tables.rs` (group structures and weight functions, made from the Fortran by a script) | all routines; the Madland-Nix spectrum (MF5 LF=12 in `anased`, which needs `e1` and `gami`) stops with a message |
+| `powr.f90` (4,902 lines) | `src/rustjoy/powr/` (`mod.rs`: main routine and the fast library; `therm.rs`; `cpm.rs` and `cpm4.rs`: the CPM library) | all routines |
+| `mathm.f90` | `src/rustjoy/mathm.rs` | `erfc` with `csevl` and `initds` (SLATEC), `legndr` |
+| `endf.f90` (`skip6`, `intgio`) | `src/rustjoy/endf.rs` | added for HEATR and MODER |
+| `main.f90` | `src/rustjoy/main.rs` | banner and module loop (`moder`, `reconr`, `broadr`, `heatr`, `thermr`, `unresr`, `gaspr`, `purr`, `leapr`, `mixr`, `resxsr`, `dtfr`, `gaminr`, `groupr`, `powr`) |
+| — | `src/rustjoy/prefetch.rs` | worker threads for the parallel prefetch (no Fortran equivalent) |
+| gfortran runtime | `src/rustjoy/fio.rs`, `src/common/ffmt.rs`, `src/rustjoy/fmath.rs` | sequential units, formatted I/O, `__powidf2`, libm calls |
 
 Not ported (unreachable from RECONR):
 

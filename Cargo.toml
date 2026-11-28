@@ -2,16 +2,22 @@
 name = "rustjoy"
 version = "0.1.0"
 edition = "2021"
-description = "Rust port of the MODER, RECONR, BROADR, HEATR, THERMR, UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR and GROUPR modules of NJOY2016"
+description = "Rust ports of NJOY2016 (rustjoy: MODER, RECONR, BROADR, HEATR, THERMR, UNRESR, GASPR, PURR, LEAPR, MIXR, RESXSR, DTFR, GAMINR and GROUPR modules) and of the PREPRO 2026 codes (prustpro)"
 license = "MIT AND BSD-3-Clause"
 
 [lib]
 name = "rustjoy"
-path = "src/lib.rs"
+path = "src/rustjoy/lib.rs"
 
 [[bin]]
 name = "rustjoy"
-path = "src/main.rs"
+path = "src/rustjoy/main.rs"
+
+# Rust port of the PREPRO ENDF/B pre-processing codes (one executable,
+# one subcommand per PREPRO program).
+[[bin]]
+name = "prustpro"
+path = "src/prustpro/main.rs"
 
 # Check programs for the numeric kernels (see tools/run_all.sh). They are
 # not usage examples: the examples are the NJOY input decks in examples/.

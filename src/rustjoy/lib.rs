@@ -4,6 +4,7 @@ pub mod dtfr;
 pub mod gaminr;
 pub mod endf;
 pub mod farr;
+#[path = "../common/ffmt.rs"]
 pub mod ffmt;
 pub mod gaspr;
 pub mod groupr;
