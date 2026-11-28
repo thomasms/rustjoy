@@ -99,7 +99,20 @@ DICTIN = {
     'blank': '\n\n',
 }
 
-DECKS = {'linear': ('LINEAR.INP', LINEAR), 'dictin': ('DICTIN.INP', DICTIN),
+def legend_deck(err, npt, tabs, legs, fix, var, table=''):
+    return '%11s%11d%11d%11d%11d%11d\nENDFB.IN\nENDFB.OUT\n%s\n' % (err, npt, tabs, legs, fix, var, table)
+
+LEGEND = {
+    'std': legend_deck(' 1.0000E-02', 20000, 2, 1, 2, 0, '     0 0  0  999999999'),
+    'def': None,
+    'coef': legend_deck(' 1.0000E-03', 0, 1, 2, 1, 1),
+    'copy': legend_deck(' 1.0000E-03', 5, 0, 0, 0, 0),
+    'fix1': legend_deck(' 1.0000E-04', 3000, 2, 1, 1, 1,
+                        '     1 4  2  9999 4  2 0.0        2.0+7      1.0-4      0.02\n     1 4  0  9999 4999 1.0+5      0.0        0.002      0.05'),
+    'fix2': legend_deck(' 5.0000E-03', 100, 1, 1, 2, 0, '  2000 4  2  3000 4  2'),
+}
+
+DECKS = {'legend': ('LEGEND.INP', LEGEND), 'linear': ('LINEAR.INP', LINEAR), 'dictin': ('DICTIN.INP', DICTIN),
          'activate': ('ACTIVATE.INP', DICTIN)}
 
 def link(case, name, src):
