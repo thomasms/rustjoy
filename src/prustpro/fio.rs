@@ -51,7 +51,7 @@ enum Mode {
 }
 
 struct FmtUnit {
-    path: String,
+    pub(crate) path: String,
     mode: Mode,
     /// Lines read so far (for BACKSPACE / REWIND of formatted files).
     nread: usize,
@@ -102,19 +102,25 @@ pub fn flush_stdout() {
     }
 }
 
+/// A gfortran runtime error, raised as a panic so that the open units are
+/// flushed while the stack unwinds (gfortran flushes them before it
+/// stops); `main` prints the message and exits with status 2.
+pub struct RuntimeError(pub String);
+
 /// gfortran runtime error: message on standard error and exit status 2.
 pub fn runtime_error(unit: i32, path: &str, msg: &str) -> ! {
-    flush_stdout();
-    eprintln!("At line 0 of file {}", PROGRAM.lock().unwrap());
-    if path.is_empty() {
-        eprintln!("Fortran runtime error: {} (unit = {})", msg, unit);
+    let m = if path.is_empty() {
+        format!("At line 0 of file {} (unit = {})\nFortran runtime error: {}", PROGRAM.lock().unwrap(), unit, msg)
     } else {
-        eprintln!(
-            "Fortran runtime error: {}\n(unit = {}, file = '{}')",
-            msg, unit, path
-        );
-    }
-    std::process::exit(2);
+        format!(
+            "At line 0 of file {} (unit = {}, file = '{}')\nFortran runtime error: {}",
+            PROGRAM.lock().unwrap(),
+            unit,
+            path,
+            msg
+        )
+    };
+    std::panic::panic_any(RuntimeError(m));
 }
 
 /// Fortran STOP: flush everything and exit with status 0.
@@ -127,6 +133,12 @@ pub fn stop(units: &mut Units) -> ! {
 impl Default for Units {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for Units {
+    fn drop(&mut self) {
+        self.close_all();
     }
 }
 

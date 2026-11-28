@@ -1029,8 +1029,7 @@ impl Endf {
                 self.h.mt = 0;
             }
             Rd::Line(l) => {
-                self.h.c1 = in9(&fio::rd_a(&l, 0, 11));
-                self.h.c2 = in9(&fio::rd_a(&l, 11, 11));
+                // the READ converts every item before IN9 is called
                 self.h.l1 = fio::rd_i(&l, 22, 11, t);
                 self.h.l2 = fio::rd_i(&l, 33, 11, t);
                 self.h.n1 = fio::rd_i(&l, 44, 11, t);
@@ -1038,6 +1037,8 @@ impl Endf {
                 self.h.mat = fio::rd_i(&l, 66, 4, t);
                 self.h.mf = fio::rd_i(&l, 70, 2, t);
                 self.h.mt = fio::rd_i(&l, 72, 3, t);
+                self.h.c1 = in9(&fio::rd_a(&l, 0, 11));
+                self.h.c2 = in9(&fio::rd_a(&l, 11, 11));
             }
         }
     }
@@ -1073,8 +1074,6 @@ impl Endf {
     pub fn cardi(&mut self) -> (f64, f64, i32, i32, i32, i32) {
         let t = self.itape;
         let l = self.rd_itape();
-        let c1 = in9(&fio::rd_a(&l, 0, 11));
-        let c2 = in9(&fio::rd_a(&l, 11, 11));
         let l1 = fio::rd_i(&l, 22, 11, t);
         let l2 = fio::rd_i(&l, 33, 11, t);
         let n1 = fio::rd_i(&l, 44, 11, t);
@@ -1082,7 +1081,21 @@ impl Endf {
         self.ld.mat = fio::rd_i(&l, 66, 4, t);
         self.ld.mf = fio::rd_i(&l, 70, 2, t);
         self.ld.mt = fio::rd_i(&l, 72, 3, t);
+        let c1 = in9(&fio::rd_a(&l, 0, 11));
+        let c2 = in9(&fio::rd_a(&l, 11, 11));
         (c1, c2, l1, l2, n1, n2)
+    }
+
+    /// `CARDI` with the arguments of COMMON/LEADER/ (C1..N2 kept there).
+    pub fn cardi_ld(&mut self) -> (f64, f64, i32, i32, i32, i32) {
+        let r = self.cardi();
+        self.ld.c1 = r.0;
+        self.ld.c2 = r.1;
+        self.ld.l1 = r.2;
+        self.ld.l2 = r.3;
+        self.ld.n1 = r.4;
+        self.ld.n2 = r.5;
+        r
     }
 
     /// `CARDO`: write a line with /HEADER/ MAT/MF/MT.

@@ -13,10 +13,11 @@ mod ffmt;
 mod endf2c;
 mod endfio;
 mod fio;
+mod linear;
 mod numcheck;
 
 /// The programs, in the order of the PREPRO verification run.
-const PROGRAMS: &[(&str, fn() -> !)] = &[("endf2c", endf2c::run)];
+const PROGRAMS: &[(&str, fn() -> !)] = &[("endf2c", endf2c::run), ("linear", linear::run)];
 
 fn usage() -> ! {
     eprintln!("prustpro {} - Rust port of PREPRO 2026-1", env!("CARGO_PKG_VERSION"));
@@ -68,5 +69,20 @@ fn main() {
         }
     };
     *fio::PROGRAM.lock().unwrap() = format!("{}.f", name.to_ascii_lowercase());
-    prog();
+    std::panic::set_hook(Box::new(|info| {
+        if info.payload().downcast_ref::<fio::RuntimeError>().is_none() {
+            eprintln!("prustpro: internal error: {}", info);
+        }
+    }));
+    match std::panic::catch_unwind(|| prog()) {
+        Ok(never) => never,
+        Err(e) => {
+            fio::flush_stdout();
+            if let Some(fio::RuntimeError(m)) = e.downcast_ref::<fio::RuntimeError>() {
+                eprintln!("{}\n\nError termination.", m);
+                std::process::exit(2);
+            }
+            std::process::exit(101);
+        }
+    }
 }

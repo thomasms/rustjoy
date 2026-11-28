@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Make test cases for prustpro: one directory per case with the ENDF input
+and the program's .INP file.
+
+usage: make_cases.py PROGRAM ENDF_DIR OUT_DIR
+
+ENDF_DIR holds ENDF files (for example NJOY2016 tests/resources). Each
+program has a list of input decks (variants of the PREPRO test inputs);
+every deck is combined with every ENDF file it can use. A case directory
+is OUT_DIR/PROGRAM/<deck>-<file>.
+"""
+import os
+import shutil
+import sys
+
+def endf_files(d):
+    out = []
+    for f in sorted(os.listdir(d)):
+        p = os.path.join(d, f)
+        if not os.path.isfile(p) or f.endswith('.ace'):
+            continue
+        with open(p, 'rb') as h:
+            head = h.read(400)
+        # an ENDF tape: second line ends with MF=1 MT=451
+        lines = head.split(b'\n')
+        if len(lines) > 2 and lines[1][70:75].strip() == b'1451':
+            out.append(f)
+    return out
+
+def mat_range(s):
+    return s
+
+LINEAR = {
+    # the PREPRO test input: its first line does not fit the format
+    # (2I11,11A1,2I11), so LINEAR takes the ERR= branch and the defaults
+    'std': """          0 1.0000E-30          1          1          1          1
+ENDFB.IN
+ENDFB.OUT
+          1       9999
+                        (BLANK CARD TERMINATES MAT REQUEST RANGES)
+ 0.0000E-00 1.0000E-03
+                        (BLANK CARD TERMINATES FILE 3 ERROR LAW)
+""",
+    'law': """          0          1 1.0000E-30          0          0
+ENDFB.IN
+ENDFB.OUT
+     0 0  0  999999999
+                        (BLANK CARD TERMINATES MAT REQUEST RANGES)
+ 0.0000E-00 1.0000E-03
+                        (BLANK CARD TERMINATES FILE 3 ERROR LAW)
+ 0.0000E-00 1.0000E-05
+ 1.0000E+00 1.0000E-05
+ 2.0000E+00 1.0000E-04
+ 2.0000E+07 1.0000E-04
+                        (BLANK CARD TERMINATES FILE 3 ERROR LAW)
+""",
+    'law3': """          0          0 1.0000E-30          1          1
+ENDFB.IN
+ENDFB.OUT
+     0 0  0  999999999
+                        (BLANK CARD TERMINATES MAT REQUEST RANGES)
+ 1.0000E-05 1.0000E-02
+ 1.0000E+02 5.0000E-03
+ 1.0000E+05
+ 2.0000E+07 2.0000E-03
+
+""",
+    'za': """          1          0 1.0000E-30          0          0
+ENDFB.IN
+ENDFB.OUT
+      1 0  0999999 0  0
+                        (BLANK CARD TERMINATES MAT REQUEST RANGES)
+ 0.0000E-00 1.0000E-04
+                        (BLANK CARD TERMINATES FILE 3 ERROR LAW)
+""",
+    'sel': """          0          1 1.0000E-30          1          0
+ENDFB.IN
+ENDFB.OUT
+     1 3  1  9999 3  4
+     1 3102  9999 3999
+     1 9  0  999910  0
+     123 0  9999270
+                        (BLANK CARD TERMINATES MAT REQUEST RANGES)
+ 0.0000E-00 3.0000E-03
+                        (BLANK CARD TERMINATES FILE 3 ERROR LAW)
+""",
+    'none': None,  # no LINEAR.INP: all defaults
+    'eof': """          0          0 1.0000E-30          0          1
+ENDFB.IN
+ENDFB.OUT
+     0 0  0  999999999
+ 0.0000E-00 1.0000E-03
+ 1.0000E+01 2.0000E-03""",
+}
+
+DECKS = {'linear': ('LINEAR.INP', LINEAR)}
+
+def main():
+    prog, endf_dir, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    inp_name, decks = DECKS[prog]
+    files = endf_files(endf_dir)
+    n = 0
+    for deck, text in decks.items():
+        for f in files:
+            case = os.path.join(out, prog, '%s-%s' % (deck, f))
+            os.makedirs(case, exist_ok=True)
+            dst = os.path.join(case, 'ENDFB.IN')
+            if not os.path.exists(dst):
+                os.symlink(os.path.abspath(os.path.join(endf_dir, f)), dst)
+            if text is not None:
+                with open(os.path.join(case, inp_name), 'w') as h:
+                    h.write(text)
+            n += 1
+    print(n, 'cases')
+
+main()
