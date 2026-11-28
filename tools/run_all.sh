@@ -178,6 +178,15 @@ echo "   broadr:"
 COMPARE_SETUP="$W/njoy-ref/njoy" python3 "$R/tools/compare.py" "$W/rust-1thread" "$RUST" "$CB" "$W/threads-broadr" | tail -1
 echo "   broadr variants:"
 COMPARE_SETUP="$W/njoy-ref/njoy" python3 "$R/tools/compare.py" "$W/rust-1thread" "$RUST" "$CV" "$W/threads-broadr-var" | tail -1
+# THERMR (calcem), PURR (energy blocks) and LEAPR (trans) also use threads;
+# HEATR, GROUPR and GAMINR are checked too, as they write through the same
+# formatting code.
+for p in "thermr $CT" "thermr-var $CTV" "purr $CP" "purr-var $CPV" "leapr $CL" \
+         "leapr-var $CLV" "heatr $CH" "groupr $CGR" "gaminr $CGM"; do
+  set -- $p
+  echo "   $1:"
+  COMPARE_SETUP="$W/njoy-ref/njoy" python3 "$R/tools/compare.py" "$W/rust-1thread" "$RUST" "$2" "$W/threads-$1" | tail -1
+done
 
 echo "== numeric kernels"
 echo "   allocation-free formatting and reading against the previous code:"

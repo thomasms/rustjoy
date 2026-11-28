@@ -97,7 +97,7 @@ What changed (none of it changes a floating-point operation or its order):
   as a new allocation would be); Fortran `I`, `F`, `E` editing and the
   ENDF number reading build their text on the stack. The old routines are
   kept, and `tools/checks/ffmt_check.rs` checks the new ones against them on
-  110,998,901 random and edge-case inputs (all identical); `numcheck`
+  130,997,261 random and edge-case inputs (all identical); `numcheck`
   (against gfortran) is unchanged.
 * **Parallel prefetch** (`src/prefetch.rs`). RECONR `resxs` and BROADR
   `broadn` refine an energy grid panel by panel. Worker threads now refine
@@ -116,6 +116,52 @@ What changed (none of it changes a floating-point operation or its order):
   materials without resolved resonances; the other formats (MLBW with
   temperature, which keeps state between calls; Adler-Adler; hybrid;
   R-matrix limited through SAMMY) run as before.
+
+### Second round: PURR, THERMR, LEAPR and ENDF output
+
+Wall-clock seconds, best of 2 runs, on the same 4-CPU machine. "Before" is
+commit `68b70b1` (POWR port); "now" is this version, with 4 threads. The
+tapes are identical, byte for byte; only the times in the listing change.
+
+| Case | Before | Now | Speed-up |
+| --- | ---: | ---: | ---: |
+| `examples/pu241-unresr` (UNRESR, HEATR, PURR) | 15.9 | **4.3** | 3.7x |
+| `examples/zrh-thermr` (THERMR, ZrH) | 6.9 | **1.9** | 3.6x |
+| THERMR test 25 (3 temperatures) | 73.8 | **7.1** | 10.4x |
+| LEAPR test 80 | 43.0 | **16.7** | 2.6x |
+| `examples/sn119-purr` | 0.6 | **0.4** | 1.5x |
+
+What changed (again, no floating-point operation or its order changes):
+
+* **PURR.** The ladders of resonances are still drawn one after the other,
+  so the random numbers come in the same order. Then the energy points are
+  divided into blocks, one block per thread. Each energy point gets the same
+  additions in the same order as before (ladder, then temperature, then
+  resonance). The cross-section table is now calculated when it is needed,
+  and the search in it is the same as in the Fortran.
+* **THERMR.** The search in the alpha and beta grids is a binary search when
+  the grid increases (else the original loop). In `calcem`, worker threads
+  calculate the energies ahead of the main program, for both the
+  incoherent (`iform` 0) and the equi-probable angle (`iform` 1) forms. The
+  only value that goes from one energy to the next (`jnz`) is returned by
+  each worker and checked by the main program. The main program uses a
+  worker's result only if the worker wrote nothing and did not stop; else
+  it calculates the energy itself.
+* **LEAPR (`trans`).** The Fortran can read values that an earlier beta or
+  alpha left in the `sb` work array, when `sbfill` fills fewer points than
+  the convolution reads. The port now finds first, for each beta, the step
+  and the number of points that `sbfill` uses. Then worker threads
+  calculate the betas, and each one rebuilds exactly the values that the
+  Fortran reads, old values included. At the end of each alpha, the main
+  `sb` array is rebuilt to its Fortran state. Small cases (fewer than
+  200,000 points) use the original serial code.
+* **ENDF output.** The 11-column numbers are now made from exact integer
+  arithmetic, with no text on the heap, and each 80-column line is built in
+  one buffer. `ffmt_check` compares the new code with the old one on 20
+  million extra cases.
+
+The check in `run_all.sh` compares 1 thread with 4 threads, byte for byte,
+for every THERMR, PURR and LEAPR case, and for their variants.
 
 The number of threads is the number of CPUs; set `NJOY_THREADS=1` to turn
 the prefetch off, or another number to choose it. The machine used for the
