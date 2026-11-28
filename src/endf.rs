@@ -85,6 +85,14 @@ pub fn rd_e(f: &[u8]) -> f64 {
     }
 }
 
+/// The columns 67-80 of an ENDF line (mat, mf, mt, sequence number).
+fn tail_into(dst: &mut [u8], math: i32, mfh: i32, mth: i32, ns: i32) {
+    ffmt::i_into(math, &mut dst[0..4]);
+    ffmt::i_into(mfh, &mut dst[4..6]);
+    ffmt::i_into(mth, &mut dst[6..9]);
+    ffmt::i_into(ns, &mut dst[9..14]);
+}
+
 fn tail(math: i32, mfh: i32, mth: i32, ns: i32) -> String {
     format!("{}{}{}{}", ffmt::i(math, 4), ffmt::i(mfh, 2), ffmt::i(mth, 3), ffmt::i(ns, 5))
 }
@@ -96,6 +104,133 @@ fn bstr(b: &[u8]) -> String {
 /// `a11`: 11-character ENDF representation of a real. `hx` is in/out because
 /// one rare path leaves it unchanged in the Fortran.
 pub fn a11(x: f64, hx: &mut [u8; 11]) {
+    let zero = 0.0f64;
+    let tenth = 0.1e0f64;
+    let onem = 0.999999999e0f64;
+    let one = 1.0f64;
+    let ten = 10.0f64;
+    let tmil = 0.999999999e7f64;
+    let up = 0.000000001e0f64;
+    let top7 = 9.9999995e0f64;
+    let top6 = 9.999995e0f64;
+    let top5 = 9.99995e0f64;
+    let top9 = 9.999999995e0f64;
+    let bot9 = 9.99999995e0f64;
+    // write (hx,'(fw.d,a1,iN)') f,s,n: the three fields fill all 11 columns
+    let put3 = |hx: &mut [u8; 11], f: f64, fw: usize, fd: usize, fk: i32, s: char, n: i32| {
+        ffmt::fp_into(f, fd, fk, &mut hx[..fw]);
+        hx[fw] = s as u8;
+        ffmt::i_into(n, &mut hx[fw + 1..]);
+    };
+    let f;
+    let s;
+    let mut n;
+    if x == zero {
+        f = 0.0;
+        s = '+';
+        n = 0;
+    } else if x > tenth && x < tmil {
+        // label 130
+        let mut f: f64;
+        let s: char;
+        let mut n = int(log10(x.abs()));
+        if x.abs() < onem {
+            // label 140
+            f = x;
+            s = '-';
+            n = -1;
+        } else {
+            f = x / powi(ten, n);
+            s = '+';
+            if n.abs() < 10 && f.abs() < top9 {
+            } else if n.abs() >= 10 && f.abs() < bot9 {
+            } else {
+                f = f / ten;
+                n = n + 1;
+            }
+        }
+        // label 150
+        if n <= 0 {
+            ffmt::fp_into(f, 8, 0, &mut hx[..]);
+        }
+        if n == 1 {
+            ffmt::fp_into(f, 7, 1, &mut hx[..]);
+        }
+        if n == 2 {
+            ffmt::fp_into(f, 6, 2, &mut hx[..]);
+        }
+        if n == 3 {
+            ffmt::fp_into(f, 5, 3, &mut hx[..]);
+        }
+        if n == 4 {
+            ffmt::fp_into(f, 4, 4, &mut hx[..]);
+        }
+        if n == 5 {
+            ffmt::fp_into(f, 3, 5, &mut hx[..]);
+        }
+        if n == 6 {
+            ffmt::fp_into(f, 2, 6, &mut hx[..]);
+        }
+        if n == -1 {
+            n = 1;
+        }
+        if f > onem && &hx[9..11] == b"00" {
+            put3(hx, f, 9, 6, 0, s, n);
+        }
+        if f > tenth && f < onem && hx[10] == b'0' {
+            put3(hx, f, 9, 6, 1, s, n);
+        }
+        return;
+    } else {
+        let xx = x;
+        n = int(log10(xx.abs()));
+        let ff;
+        if xx.abs() < one {
+            // label 110
+            n = 1 - n;
+            let mut f2 = xx * powi(ten, n);
+            let mut s2 = '-';
+            if n.abs() < 10 && f2.abs() < top7 {
+            } else if n.abs() < 100 && n.abs() >= 10 && f2.abs() < top6 {
+            } else if n.abs() >= 100 && f2.abs() < top5 {
+            } else {
+                f2 = f2 / ten;
+                f2 = f2 + up;
+                n = n - 1;
+                if n <= 0 {
+                    s2 = '+';
+                }
+            }
+            ff = f2;
+            s = s2;
+        } else {
+            let mut f2 = xx / powi(ten, n);
+            if n.abs() < 10 && f2.abs() < top7 {
+            } else if n.abs() < 100 && n.abs() >= 10 && f2.abs() < top6 {
+            } else if n.abs() >= 100 && f2.abs() < top5 {
+            } else {
+                f2 = f2 / ten;
+                f2 = f2 + up;
+                n = n + 1;
+            }
+            ff = f2;
+            s = '+';
+        }
+        f = ff;
+    }
+    // label 160
+    if n.abs() < 10 {
+        put3(hx, f, 9, 6, 0, s, n);
+    } else if n.abs() < 100 {
+        put3(hx, f, 8, 5, 0, s, n);
+    } else {
+        put3(hx, f, 7, 4, 0, s, n);
+    }
+}
+
+/// `a11` with heap strings: the reference for the check of `a11`
+/// (tools/checks/ffmt_check.rs).
+pub fn a11_ref(x: f64, hx: &mut [u8; 11]) {
     let zero = 0.0f64;
     let tenth = 0.1e0f64;
     let onem = 0.999999999e0f64;
@@ -1009,25 +1144,25 @@ impl Ctx {
             self.nah = 6;
         }
         if nout != 0 || nscr != 0 {
-            let mut body = String::with_capacity(66);
-            for k in 1..=6 {
-                if k <= self.nah {
-                    body.push_str(&a11s(self.ah[(k - 1) as usize]));
-                } else {
-                    body.push_str("           ");
+            let mut line = [b' '; 80];
+            for k in 1..=6usize {
+                if k as i32 <= self.nah {
+                    let mut h = [b' '; 11];
+                    a11(self.ah[k - 1], &mut h);
+                    line[11 * (k - 1)..11 * k].copy_from_slice(&h);
                 }
             }
             if nout != 0 {
-                let s = format!("{}{}", body, tail(self.math, self.mfh, self.mth, self.nsh));
-                self.io.write_line(nout, &s);
+                tail_into(&mut line[66..], self.math, self.mfh, self.mth, self.nsh);
+                self.io.write_line_bytes(nout, &line);
                 self.nsh += 1;
                 if self.nsh > 99999 {
                     self.nsh = 1;
                 }
             }
             if nscr != 0 {
-                let s = format!("{}{}", body, tail(self.math, self.mfh, self.mth, self.nsc));
-                self.io.write_line(nscr, &s);
+                tail_into(&mut line[66..], self.math, self.mfh, self.mth, self.nsc);
+                self.io.write_line_bytes(nscr, &line);
                 self.nsc += 1;
                 if self.nsc > 99999 {
                     self.nsc = 1;

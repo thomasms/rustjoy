@@ -1851,19 +1851,29 @@ impl Purr {
             fsort(&mut w.es, ne);
 
             //--loop over sequences
+            // The ladders of all sequences are drawn first (in the same order,
+            // so the random numbers are the same). The contributions are then
+            // added with the energy points split between threads: each point
+            // gets the same additions in the same order (sequence, then
+            // temperature, then resonance) as in the Fortran, so the result
+            // does not depend on the number of threads.
+            let mut ladders: Vec<Ladder> = Vec::with_capacity(self.nseq0.max(0) as usize);
             for k in 1..=self.nseq0 as usize {
                 let nr = self.ladr2(c, k, elow, ehigh, w);
-
-                //--loop over temperatures
-                for itemp in 1..=ntemp {
-                    let ctx = self.cth[k] * sqrt(TREF / temp[itemp as usize]);
-
-                    //--accumulate contributions to cross sections
-                    for jr in 1..=nr as usize {
-                        self.accum(w, k, jr, itemp, ctx, ne, rpi);
-                    }
-                }
+                let n = nr.max(0) as usize + 1;
+                let ctx = (1..=ntemp).map(|itemp| self.cth[k] * sqrt(TREF / temp[itemp as usize])).collect();
+                ladders.push(Ladder {
+                    k,
+                    nr,
+                    ctx,
+                    er: w.er[..n].to_vec(),
+                    gt: w.gt[..n].to_vec(),
+                    gnr: w.gnr[..n].to_vec(),
+                    ggr: w.ggr[..n].to_vec(),
+                    gfr: w.gfr[..n].to_vec(),
+                });
             }
+            self.accum_all(w, &ladders, ntemp, ne, rpi);
 
             //--eliminate negative elastic cross sections; reset to 1 microbarn
             for itemp in 1..=ntemp {
@@ -2267,237 +2277,52 @@ impl Purr {
         }
     }
 
-    /// The body of loop 210 of unrest: add the contribution of resonance
-    /// jr of sequence k to the cross sections at temperature itemp.
-    fn accum(&self, w: &mut Work, k: usize, jr: usize, itemp: i32, ctx: f64, ne: i32, rpi: f64) {
-        const CON1: f64 = 31.83e0;
-        const CON2: f64 = 20.0e0;
-        const BREAK1: f64 = 0.5e0;
-        const BREAK2: f64 = 3.9e0;
-        let chek1 = CON1 * w.gt[jr];
-        let chek2 = CON2 / ctx;
-        let mut chekn = chek1;
-        if chek2 > chek1 {
-            chekn = chek2;
-        }
-        let delr = chek1 + chekn;
-        let elo = w.er[jr] - delr;
-        let ehi = w.er[jr] + delr;
-        let (i7, _) = fsrch(ehi, &w.es[1..], ne);
-        let (i0, _) = fsrch(elo, &w.es[1..], i7);
-        if i0 == i7 {
+    /// Add the contributions of the resonance ladders of one ladder pass
+    /// (loop 210 of unrest for all sequences, temperatures and resonances).
+    /// The energy points are split into blocks, one for each thread; see
+    /// `accum_block`.
+    fn accum_all(&self, w: &mut Work, lads: &[Ladder], ntemp: i32, ne: i32, rpi: f64) {
+        let tabs = Tabs {
+            tr: &self.tr,
+            ti: &self.ti,
+            trs: &self.trs,
+            tis: &self.tis,
+            csz: &self.csz,
+            cc2p: &self.cc2p,
+            cs2p: &self.cs2p,
+        };
+        let nt = w.cap.n1;
+        let neu = ne.max(0) as usize;
+        let es = &w.es;
+        let cap = &mut w.cap.v[..neu * nt];
+        let fis = &mut w.fis.v[..neu * nt];
+        let els = &mut w.els.v[..neu * nt];
+        let nth = crate::util::threads().min(neu / 500).max(1);
+        if nth == 1 {
+            accum_block(&tabs, lads, es, ne, ntemp, nt, rpi, 1, ne, cap, fis, els);
             return;
         }
-        let it = i7 - i0 + 1;
-        let y = ctx * w.gt[jr] / 2.0;
-        let yy = y * y;
-        let szy = self.csz[k] * w.gnr[jr] * rpi * y;
-        let cc2 = szy * (self.cc2p[k] - 1.0 + w.gnr[jr]);
-        let cs2 = szy * self.cs2p[k];
-        let ccg = szy * w.ggr[jr];
-        let ccf = szy * w.gfr[jr];
-        for ie in i0..=i7 {
-            w.xs[ie as usize] = ctx * (w.es[ie as usize] - w.er[jr]);
-        }
-        let cap = &mut w.cap;
-        let fis = &mut w.fis;
-        let els = &mut w.els;
-        let xs = &w.xs;
-        let mut add = |ie: i32, rew: f64, aimw: f64| {
-            cap[(itemp, ie)] += ccg * rew;
-            fis[(itemp, ie)] += ccf * rew;
-            els[(itemp, ie)] = els[(itemp, ie)] + cc2 * rew + cs2 * aimw;
-        };
-        // search xs(i0:i0+it-1) and shift the result as the Fortran does
-        let srch = |test: f64| -> i32 {
-            let (mut i, mfl) = fsrch(test, &xs[i0 as usize..], it);
-            if i == 1 && mfl == 2 {
-                i = 0;
-            }
-            i + i0 - 1
-        };
-
-        //--accumulate cross sections using an
-        //--appropriate approximation in each range
-        let mut i6 = i0 - 1;
-        let (mut i1, mut i2, mut i3, mut i4, mut i5) = (0i32, 0i32, 0i32, 0i32, 0i32);
-        let mut lab = if y > 100.0 { 340 } else { 0 };
-        loop {
-            match lab {
-                0 => {
-                    // asymptotic term for x.gt.100 or y.gt.100
-                    i1 = srch(-100.0);
-                    if i1 < i0 {
-                        i1 = i0 - 1;
-                    }
-                    lab = 240;
-                    if i1 <= i0 {
-                        continue;
-                    }
-                    for ie in i0..=i1 {
-                        let (rew, aimw) = wasym(xs[ie as usize], y, yy);
-                        add(ie, rew, aimw);
-                    }
-                    if i1 >= i7 {
-                        return;
-                    }
-                }
-                240 => {
-                    // rational approximation for x.gt.6 or y.gt.6 but x and y .le.100
-                    i5 = i1;
-                    if y > 6.0 {
-                        lab = 330;
-                        continue;
-                    }
-                    i2 = srch(-6.0);
-                    if i2 < i1 {
-                        i2 = i1;
-                    }
-                    lab = 250;
-                    if i2 <= i1 {
-                        continue;
-                    }
-                    for ie in i1 + 1..=i2 {
-                        let (rew, aimw) = wrat2(xs[ie as usize], y, yy);
-                        add(ie, rew, aimw);
-                    }
-                    if i2 >= i7 {
-                        return;
-                    }
-                }
-                250 => {
-                    // rational approximation for x.gt.3.9 or y.gt.3.0 but x and y .le.6
-                    i4 = i2;
-                    if y > 3.0 {
-                        lab = 320;
-                        continue;
-                    }
-                    i3 = srch(-BREAK2);
-                    if i3 < i2 {
-                        i3 = i2;
-                    }
-                    lab = 260;
-                    if i3 <= i2 {
-                        continue;
-                    }
-                    for ie in i2 + 1..=i3 {
-                        let (rew, aimw) = wrat3(xs[ie as usize], y, yy);
-                        add(ie, rew, aimw);
-                    }
-                    if i3 >= i7 {
-                        return;
-                    }
-                }
-                260 => {
-                    // six point table interpolation for 0.le.abs(x).le.3.9
-                    i4 = srch(BREAK2);
-                    if i4 < i3 {
-                        i4 = i3;
-                    }
-                    lab = 320;
-                    if i4 <= i3 {
-                        continue;
-                    }
-                    let is = i3 + 1;
-                    let (tr, ti, tempor, joff) = if y >= BREAK1 {
-                        // y.ge.0.5
-                        (&self.tr, &self.ti, 10.0 * y, -3)
-                    } else {
-                        // y.lt.0.5
-                        (&self.trs, &self.tis, 50.0 * y, 2)
-                    };
-                    let jj = int(tempor);
-                    let j = jj + joff;
-                    let n = j - 1;
-                    let q = tempor - jj as f64;
-                    let q2 = q * q;
-                    let hq = 0.5 * q;
-                    let hq2 = 0.5 * q2;
-                    let a1 = hq2 - hq;
-                    for ie in is..=i4 {
-                        let x = xs[ie as usize];
-                        let ax = x.abs();
-                        let mut aki = 1.0;
-                        if x < 0.0 {
-                            aki = -1.0;
-                        }
-                        let tempor = 10.0 * ax;
-                        let ii = int(tempor);
-                        let i = ii + 2;
-                        let p = tempor - ii as f64;
-                        let p2 = p * p;
-                        let hp = 0.5 * p;
-                        let hp2 = 0.5 * p2;
-                        let a2 = hp2 - hp;
-                        let pq = p * q;
-                        let a3 = 1.0 + pq - p2 - q2;
-                        let a4 = hp2 - pq + hp;
-                        let a5 = hq2 - pq + hq;
-                        let rew = a1 * t41(tr, i, n)
-                            + a2 * t41(tr, i - 1, j)
-                            + a3 * t41(tr, i, j)
-                            + a4 * t41(tr, i + 1, j)
-                            + a5 * t41(tr, i, j + 1)
-                            + pq * t41(tr, i + 1, j + 1);
-                        let mut aimw = a1 * t41(ti, i, n)
-                            + a2 * t41(ti, i - 1, j)
-                            + a3 * t41(ti, i, j)
-                            + a4 * t41(ti, i + 1, j)
-                            + a5 * t41(ti, i, j + 1)
-                            + pq * t41(ti, i + 1, j + 1);
-                        aimw *= aki;
-                        add(ie, rew, aimw);
-                    }
-                    if i4 >= i7 {
-                        return;
-                    }
-                }
-                320 => {
-                    // rational approximation for x.gt.3.9 or y.gt.3.0 but x and y .le.6
-                    i5 = srch(6.0);
-                    if i5 < i4 {
-                        i5 = i4;
-                    }
-                    lab = 330;
-                    if i5 <= i4 {
-                        continue;
-                    }
-                    for ie in i4 + 1..=i5 {
-                        let (rew, aimw) = wrat3(xs[ie as usize], y, yy);
-                        add(ie, rew, aimw);
-                    }
-                    if i5 >= i7 {
-                        return;
-                    }
-                }
-                330 => {
-                    // rational approximation for x.gt.6 or y.gt.6 but x and y .le.100
-                    i6 = srch(100.0);
-                    if i6 < i5 {
-                        i6 = i5;
-                    }
-                    lab = 340;
-                    if i6 <= i5 {
-                        continue;
-                    }
-                    for ie in i5 + 1..=i6 {
-                        let (rew, aimw) = wrat2(xs[ie as usize], y, yy);
-                        add(ie, rew, aimw);
-                    }
-                    if i6 >= i7 {
-                        return;
-                    }
-                }
-                _ => {
-                    // asymptotic term for x.gt.100 or y.gt.100
-                    for ie in i6 + 1..=i7 {
-                        let (rew, aimw) = wasym(xs[ie as usize], y, yy);
-                        add(ie, rew, aimw);
-                    }
-                    return;
+        // block ib holds the points lo(ib)..lo(ib+1)-1
+        let lo = |ib: usize| 1 + (ib * neu / nth) as i32;
+        std::thread::scope(|s| {
+            let (mut cap, mut fis, mut els) = (cap, fis, els);
+            for ib in 0..nth {
+                let (a, b) = (lo(ib), lo(ib + 1) - 1);
+                let m = (b - a + 1) as usize * nt;
+                let (c1, c2) = std::mem::take(&mut cap).split_at_mut(m);
+                let (f1, f2) = std::mem::take(&mut fis).split_at_mut(m);
+                let (e1, e2) = std::mem::take(&mut els).split_at_mut(m);
+                cap = c2;
+                fis = f2;
+                els = e2;
+                let tabs = &tabs;
+                if ib + 1 < nth {
+                    s.spawn(move || accum_block(tabs, lads, es, ne, ntemp, nt, rpi, a, b, c1, f1, e1));
+                } else {
+                    accum_block(tabs, lads, es, ne, ntemp, nt, rpi, a, b, c1, f1, e1);
                 }
             }
-        }
+        });
     }
 
     // ============================================================== uwtab2
@@ -2566,7 +2391,6 @@ struct Work {
     gxr: Vec<f64>,
     gt: Vec<f64>,
     es: Vec<f64>,
-    xs: Vec<f64>,
     cap: RM,
     fis: RM,
     els: RM,
@@ -2585,10 +2409,294 @@ impl Work {
             gxr: vec![0.0; nr],
             gt: vec![0.0; nr],
             es: vec![0.0; ns],
-            xs: vec![0.0; ns],
             cap: RM::new(nt, nsamp as usize),
             fis: RM::new(nt, nsamp as usize),
             els: RM::new(nt, nsamp as usize),
+        }
+    }
+}
+
+/// The resonances of one sequence of a ladder pass (copied from `Work`
+/// after `ladr2`), with ctx for each temperature.
+struct Ladder {
+    k: usize,
+    nr: i32,
+    ctx: Vec<f64>,
+    er: Vec<f64>,
+    gt: Vec<f64>,
+    gnr: Vec<f64>,
+    ggr: Vec<f64>,
+    gfr: Vec<f64>,
+}
+
+/// The read-only tables that the accumulation uses.
+struct Tabs<'a> {
+    tr: &'a [f64],
+    ti: &'a [f64],
+    trs: &'a [f64],
+    tis: &'a [f64],
+    csz: &'a [f64],
+    cc2p: &'a [f64],
+    cs2p: &'a [f64],
+}
+
+/// Loop 210 of unrest for the energy points a..b only: for each sequence,
+/// temperature and resonance in the Fortran order, add the contribution of
+/// the resonance to the points of a..b that it touches. The ranges of the
+/// approximations are found from all the points, as in the Fortran, so
+/// each point gets exactly the same additions as in a run with one block.
+/// cap, fis and els hold the elements (itemp, a..b) of the full arrays.
+#[allow(clippy::too_many_arguments)]
+fn accum_block(
+    t: &Tabs, lads: &[Ladder], es: &[f64], ne: i32, ntemp: i32, nt: usize, rpi: f64, a: i32, b: i32,
+    cap: &mut [f64], fis: &mut [f64], els: &mut [f64],
+) {
+    for lad in lads {
+        for itemp in 1..=ntemp {
+            let ctx = lad.ctx[(itemp - 1) as usize];
+            for jr in 1..=lad.nr as usize {
+                accum_one(t, lad, jr, es, ne, itemp, ctx, nt, rpi, a, b, cap, fis, els);
+            }
+        }
+    }
+}
+
+/// The body of loop 210 of unrest: add the contribution of resonance jr
+/// of a ladder to the cross sections at temperature itemp, for the energy
+/// points a..b only. xs(ie) = ctx*(es(ie)-er(jr)) is computed when it is
+/// needed (the same expression as the Fortran's stored xs).
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn accum_one(
+    t: &Tabs, lad: &Ladder, jr: usize, es: &[f64], ne: i32, itemp: i32, ctx: f64, nt: usize, rpi: f64, a: i32,
+    b: i32, cap: &mut [f64], fis: &mut [f64], els: &mut [f64],
+) {
+    const CON1: f64 = 31.83e0;
+    const CON2: f64 = 20.0e0;
+    const BREAK1: f64 = 0.5e0;
+    const BREAK2: f64 = 3.9e0;
+    let k = lad.k;
+    let er = lad.er[jr];
+    let chek1 = CON1 * lad.gt[jr];
+    let chek2 = CON2 / ctx;
+    let mut chekn = chek1;
+    if chek2 > chek1 {
+        chekn = chek2;
+    }
+    let delr = chek1 + chekn;
+    let elo = er - delr;
+    let ehi = er + delr;
+    let (i7, _) = fsrch(ehi, &es[1..], ne);
+    let (i0, _) = fsrch(elo, &es[1..], i7);
+    if i0 == i7 || i7 < a || i0 > b {
+        return;
+    }
+    let it = i7 - i0 + 1;
+    let y = ctx * lad.gt[jr] / 2.0;
+    let yy = y * y;
+    let szy = t.csz[k] * lad.gnr[jr] * rpi * y;
+    let cc2 = szy * (t.cc2p[k] - 1.0 + lad.gnr[jr]);
+    let cs2 = szy * t.cs2p[k];
+    let ccg = szy * lad.ggr[jr];
+    let ccf = szy * lad.gfr[jr];
+    let xs = |ie: i32| ctx * (es[ie as usize] - er);
+    let base = (itemp - 1) as usize;
+    let mut add = |ie: i32, rew: f64, aimw: f64| {
+        let l = base + (ie - a) as usize * nt;
+        cap[l] += ccg * rew;
+        fis[l] += ccf * rew;
+        els[l] = els[l] + cc2 * rew + cs2 * aimw;
+    };
+    // search xs(i0:i0+it-1) and shift the result as the Fortran does
+    let srch = |test: f64| -> i32 {
+        let (mut i, mfl) = fsrch_by(test, |i| xs(i0 + i - 1), it);
+        if i == 1 && mfl == 2 {
+            i = 0;
+        }
+        i + i0 - 1
+    };
+    // the points of lo..hi that are in this block
+    let part = |lo: i32, hi: i32| lo.max(a)..=hi.min(b);
+
+    //--accumulate cross sections using an
+    //--appropriate approximation in each range
+    let mut i6 = i0 - 1;
+    let (mut i1, mut i2, mut i3, mut i4, mut i5) = (0i32, 0i32, 0i32, 0i32, 0i32);
+    let mut lab = if y > 100.0 { 340 } else { 0 };
+    loop {
+        match lab {
+            0 => {
+                // asymptotic term for x.gt.100 or y.gt.100
+                i1 = srch(-100.0);
+                if i1 < i0 {
+                    i1 = i0 - 1;
+                }
+                lab = 240;
+                if i1 <= i0 {
+                    continue;
+                }
+                for ie in part(i0, i1) {
+                    let (rew, aimw) = wasym(xs(ie), y, yy);
+                    add(ie, rew, aimw);
+                }
+                if i1 >= i7 {
+                    return;
+                }
+            }
+            240 => {
+                // rational approximation for x.gt.6 or y.gt.6 but x and y .le.100
+                i5 = i1;
+                if y > 6.0 {
+                    lab = 330;
+                    continue;
+                }
+                i2 = srch(-6.0);
+                if i2 < i1 {
+                    i2 = i1;
+                }
+                lab = 250;
+                if i2 <= i1 {
+                    continue;
+                }
+                for ie in part(i1 + 1, i2) {
+                    let (rew, aimw) = wrat2(xs(ie), y, yy);
+                    add(ie, rew, aimw);
+                }
+                if i2 >= i7 {
+                    return;
+                }
+            }
+            250 => {
+                // rational approximation for x.gt.3.9 or y.gt.3.0 but x and y .le.6
+                i4 = i2;
+                if y > 3.0 {
+                    lab = 320;
+                    continue;
+                }
+                i3 = srch(-BREAK2);
+                if i3 < i2 {
+                    i3 = i2;
+                }
+                lab = 260;
+                if i3 <= i2 {
+                    continue;
+                }
+                for ie in part(i2 + 1, i3) {
+                    let (rew, aimw) = wrat3(xs(ie), y, yy);
+                    add(ie, rew, aimw);
+                }
+                if i3 >= i7 {
+                    return;
+                }
+            }
+            260 => {
+                // six point table interpolation for 0.le.abs(x).le.3.9
+                i4 = srch(BREAK2);
+                if i4 < i3 {
+                    i4 = i3;
+                }
+                lab = 320;
+                if i4 <= i3 {
+                    continue;
+                }
+                let is = i3 + 1;
+                let (tr, ti, tempor, joff) = if y >= BREAK1 {
+                    // y.ge.0.5
+                    (t.tr, t.ti, 10.0 * y, -3)
+                } else {
+                    // y.lt.0.5
+                    (t.trs, t.tis, 50.0 * y, 2)
+                };
+                let jj = int(tempor);
+                let j = jj + joff;
+                let n = j - 1;
+                let q = tempor - jj as f64;
+                let q2 = q * q;
+                let hq = 0.5 * q;
+                let hq2 = 0.5 * q2;
+                let a1 = hq2 - hq;
+                for ie in part(is, i4) {
+                    let x = xs(ie);
+                    let ax = x.abs();
+                    let mut aki = 1.0;
+                    if x < 0.0 {
+                        aki = -1.0;
+                    }
+                    let tempor = 10.0 * ax;
+                    let ii = int(tempor);
+                    let i = ii + 2;
+                    let p = tempor - ii as f64;
+                    let p2 = p * p;
+                    let hp = 0.5 * p;
+                    let hp2 = 0.5 * p2;
+                    let a2 = hp2 - hp;
+                    let pq = p * q;
+                    let a3 = 1.0 + pq - p2 - q2;
+                    let a4 = hp2 - pq + hp;
+                    let a5 = hq2 - pq + hq;
+                    let rew = a1 * t41(tr, i, n)
+                        + a2 * t41(tr, i - 1, j)
+                        + a3 * t41(tr, i, j)
+                        + a4 * t41(tr, i + 1, j)
+                        + a5 * t41(tr, i, j + 1)
+                        + pq * t41(tr, i + 1, j + 1);
+                    let mut aimw = a1 * t41(ti, i, n)
+                        + a2 * t41(ti, i - 1, j)
+                        + a3 * t41(ti, i, j)
+                        + a4 * t41(ti, i + 1, j)
+                        + a5 * t41(ti, i, j + 1)
+                        + pq * t41(ti, i + 1, j + 1);
+                    aimw *= aki;
+                    add(ie, rew, aimw);
+                }
+                if i4 >= i7 {
+                    return;
+                }
+            }
+            320 => {
+                // rational approximation for x.gt.3.9 or y.gt.3.0 but x and y .le.6
+                i5 = srch(6.0);
+                if i5 < i4 {
+                    i5 = i4;
+                }
+                lab = 330;
+                if i5 <= i4 {
+                    continue;
+                }
+                for ie in part(i4 + 1, i5) {
+                    let (rew, aimw) = wrat3(xs(ie), y, yy);
+                    add(ie, rew, aimw);
+                }
+                if i5 >= i7 {
+                    return;
+                }
+            }
+            330 => {
+                // rational approximation for x.gt.6 or y.gt.6 but x and y .le.100
+                i6 = srch(100.0);
+                if i6 < i5 {
+                    i6 = i5;
+                }
+                lab = 340;
+                if i6 <= i5 {
+                    continue;
+                }
+                for ie in part(i5 + 1, i6) {
+                    let (rew, aimw) = wrat2(xs(ie), y, yy);
+                    add(ie, rew, aimw);
+                }
+                if i6 >= i7 {
+                    return;
+                }
+            }
+            _ => {
+                // asymptotic term for x.gt.100 or y.gt.100
+                for ie in part(i6 + 1, i7) {
+                    let (rew, aimw) = wasym(xs(ie), y, yy);
+                    add(ie, rew, aimw);
+                }
+                return;
+            }
         }
     }
 }
@@ -2895,7 +3003,12 @@ fn quicksort(a: &mut [f64], l: i32, r: i32) {
 /// `xarray[0]` is xarray(1). Returns (i, k): k=2 if x is below the lower
 /// limit (i=1), k=3 if above the upper limit (i=n), else k=1.
 fn fsrch(x: f64, xarray: &[f64], n: i32) -> (i32, i32) {
-    let xa = |i: i32| xarray[(i - 1) as usize];
+    fsrch_by(x, |i| xarray[(i - 1) as usize], n)
+}
+
+/// `fsrch` with xarray(i) given by the function xa.
+#[inline]
+fn fsrch_by(x: f64, xa: impl Fn(i32) -> f64, n: i32) -> (i32, i32) {
     if x < xa(1) {
         return (1, 2);
     }

@@ -1533,6 +1533,7 @@ impl Thermr {
 
 /// The S(alpha,beta) table and the module values that `sig`, `sigl` and
 /// `sigu` read (fixed while calcem runs over its energy grid).
+#[derive(Clone)]
 struct Sab {
     nalpha: i32,
     nbeta: i32,
@@ -1552,6 +1553,37 @@ struct Sab {
     sb: f64,
     sb2: f64,
     thr6: f64,
+    /// alpha(2..nalpha) and beta(2..nbeta) are in ascending order, so that
+    /// `first_above` can use a binary search
+    alpha_up: bool,
+    beta_up: bool,
+}
+
+/// The loop `do i=1,n1; k=i; if (x.lt.v(i+1)) exit; enddo` (k=0 if n1<1):
+/// the first i with x<v(i+1), else n1. With `up` (v(2..n1+1) ascending) a
+/// binary search gives the same i.
+#[inline]
+fn first_above(v: &RV, n1: i32, x: f64, up: bool) -> i32 {
+    if n1 < 1 {
+        return 0;
+    }
+    if up {
+        let p = v.0[1..=n1 as usize].partition_point(|&w| !(x < w)) as i32;
+        return if p < n1 { p + 1 } else { n1 };
+    }
+    let mut k = 0;
+    for i in 1..=n1 {
+        k = i;
+        if x < v[i + 1] {
+            break;
+        }
+    }
+    k
+}
+
+/// v(2..n) is in ascending order (no NaN).
+fn ascending(v: &RV, n: i32) -> bool {
+    n < 2 || v.0[1..n as usize].windows(2).all(|w| w[0] <= w[1])
 }
 
 const SABFLG: f64 = -225.0e0;
@@ -1630,20 +1662,8 @@ impl Sab {
             if self.lasym == 1 && bb < ZERO {
                 bbb = -b;
             }
-            let mut ib = 0i32;
-            for i in 1..=nb1 {
-                ib = i;
-                if bbb < beta[i + 1] {
-                    break;
-                }
-            }
-            let mut ia = 0i32;
-            for i in 1..=na1 {
-                ia = i;
-                if a < alpha[i + 1] {
-                    break;
-                }
-            }
+            let mut ib = first_above(beta, nb1, bbb, self.beta_up);
+            let mut ia = first_above(alpha, na1, a, self.alpha_up);
             if !(self.cliq == ZERO || a >= alpha[1]) && self.lasym != 1 && !(b > TEST1) {
                 s = self.s(1, 1) + log(alpha[1] / a) / 2.0 - self.cliq * (b * b) / a;
                 if s < SABFLG {
@@ -2222,6 +2242,489 @@ fn clamp_cos(c: &mut Ctx, v: &mut f64, tag: &str, enow: f64, ep: f64) {
     }
 }
 
+
+/// The inputs of the per-energy work of `calcem` that do not change in its
+/// incident energy loop.
+#[derive(Clone)]
+struct CeIn {
+    sp: Sab,
+    nl: i32,
+    nnl: i32,
+    nbeta: i32,
+    jmax: i32,
+    tev: f64,
+    tol: f64,
+    temp: f64,
+}
+
+/// A growing 0-based array, written where `scr` would be written.
+#[derive(Default)]
+struct Grow(Vec<f64>);
+impl std::ops::Index<i32> for Grow {
+    type Output = f64;
+    fn index(&self, i: i32) -> &f64 {
+        &self.0[i as usize]
+    }
+}
+impl std::ops::IndexMut<i32> for Grow {
+    fn index_mut(&mut self, i: i32) -> &mut f64 {
+        let i = i as usize;
+        if i >= self.0.len() {
+            self.0.resize(i + 1, 0.0);
+        }
+        &mut self.0[i]
+    }
+}
+
+/// The result of one incident energy of the e-mu-ep loop of `calcem`.
+#[derive(Default)]
+struct EmuOut {
+    /// false: not computed (a worker gave up); the main program computes it
+    ok: bool,
+    enow: f64,
+    xsi: f64,
+    ubar: f64,
+    p2: f64,
+    p3: f64,
+    j: i32,
+    /// the last value given to jnz, if any
+    jnz: Option<i32>,
+    /// the last value that sigl gave to nbin, if any
+    nbin: Option<i32>,
+    /// scr(7..): the values written to scr
+    sc: Grow,
+}
+
+/// One incident energy ie of the e-mu-ep loop of `calcem` (loop 311 to
+/// label 430), up to the jnz test. The energies do not depend on each
+/// other except through jnz, which is returned for the caller to apply.
+fn emu_energy(inp: &CeIn, c: &mut Ctx, ie: i32) -> EmuOut {
+    const NLMAX: i32 = 65;
+    const IMAX: i32 = 20;
+    const TOLMIN: f64 = 5.0e-7;
+    const HALF: f64 = 0.5e0;
+    const THERM: f64 = 0.0253e0;
+    const BREAK: f64 = 3000.0e0;
+    const EM9: f64 = 1.0e-9;
+    const ZERO: f64 = 0.0;
+    const UUMIN: f64 = 0.00001e0;
+    let egrid = |i: i32| EGRID[(i - 1) as usize];
+    let sp = &inp.sp;
+    let (nl, nnl, nbeta, jmax, tev, tol, temp) = (inp.nl, inp.nnl, inp.nbeta, inp.jmax, inp.tev, inp.tol, inp.temp);
+    let mut x = [0.0f64; IMAX as usize + 2];
+    let mut y = vec![0.0f64; (NLMAX * (IMAX + 2)) as usize];
+    let yi = |il: i32, i: i32| ((il - 1) + NLMAX * (i - 1)) as usize;
+    let mut yt = [0.0f64; NLMAX as usize + 2];
+    let mut p = [0.0f64; 8];
+    let mut sc = Grow::default();
+    let mut nbin = i32::MIN;
+    let mut jnz: Option<i32> = None;
+    let mut xlast = 0.0f64;
+    let mut ylast = 0.0f64;
+    let mut ulast = 0.0f64;
+    let mut u2last = 0.0f64;
+    let mut u3last = 0.0f64;
+    let mut xm = 0.0f64;
+    let mut ym = 0.0f64;
+    let mut xsi_e;
+    let mut ubar_e;
+    let mut p2_e;
+    let mut p3_e;
+    let mut enow;
+    enow = egrid(ie);
+    if temp > BREAK {
+        let tone = THERM / BK;
+        let elo = egrid(1);
+        enow = elo * exp(log(enow / elo) * log((temp / tone) * egrid(NGRID) / elo) / log(egrid(NGRID) / elo));
+    }
+    enow = sigfig(enow, 8, 0);
+                    xsi_e = 0.0;
+    ubar_e = 0.0;
+    p2_e = 0.0;
+    p3_e = 0.0;
+    let mut ep = 0.0f64;
+    x[1] = ep;
+    sp.sigl(c, &mut nbin, enow, ep, nnl, tev, &mut yt, tol);
+    for il in 1..=nl {
+        y[yi(il, 1)] = yt[il as usize];
+    }
+    let mut jbeta = -nbeta;
+    if sp.lasym > 0 {
+        jbeta = 1;
+    }
+    let mut j = 0i32;
+    let mut iskip = 0;
+    let mut i;
+    // label 311: loop over beta values
+    'beta: loop {
+        x[2] = x[1];
+        for il in 1..=nl {
+            y[yi(il, 2)] = y[yi(il, 1)];
+        }
+        loop {
+            // label 313
+            if jbeta == 0 {
+                jbeta = 1;
+            }
+            let bt = if sp.lat == 1 { sp.tevz } else { tev };
+            if jbeta <= 0 {
+                ep = enow - sp.beta[-jbeta] * bt;
+                if ep == enow {
+                    ep = sigfig(enow, 8, -1);
+                } else {
+                    ep = sigfig(ep, 8, 0);
+                }
+            } else {
+                ep = enow + sp.beta[jbeta] * bt;
+                if ep == enow {
+                    ep = sigfig(enow, 8, 1);
+                    iskip = 1;
+                } else {
+                    ep = sigfig(ep, 8, 0);
+                }
+            }
+            if ep > x[2] {
+                break;
+            }
+            jbeta += 1;
+        }
+        // label 316
+        ep = sigfig(ep, 8, 0);
+        x[1] = ep;
+        sp.sigl(c, &mut nbin, enow, ep, nnl, tev, &mut yt, tol);
+        for il in 1..=nl {
+            y[yi(il, 1)] = yt[il as usize];
+        }
+        i = 2i32;
+        loop {
+            // label 330
+            let iu_ = i as usize;
+            let mut refine = false;
+            'r360: {
+                if i == IMAX {
+                    break 'r360;
+                }
+                if iskip == 1 {
+                    iskip = 0;
+                    break 'r360;
+                }
+                if HALF * (y[yi(1, i - 1)] + y[yi(1, i)]) * (x[iu_ - 1] - x[iu_]) < TOLMIN {
+                    break 'r360;
+                }
+                xm = HALF * (x[iu_ - 1] + x[iu_]);
+                xm = sigfig(xm, 8, 0);
+                if xm <= x[iu_] || xm >= x[iu_ - 1] {
+                    break 'r360;
+                }
+                sp.sigl(c, &mut nbin, enow, xm, nnl, tev, &mut yt, tol);
+                let mut uu = 0.0f64;
+                let mut uum = 0.0f64;
+                for k in 1..=nl {
+                    c.terp1(x[iu_], y[yi(k, i)], x[iu_ - 1], y[yi(k, i - 1)], xm, &mut ym, 2);
+                    if k > 1 {
+                        uu += yt[k as usize];
+                    }
+                    if k > 1 {
+                        uum += ym;
+                    }
+                    let test = tol * yt[k as usize].abs();
+                    let mut test2 = test;
+                    if k > 1 {
+                        test2 = tol;
+                    }
+                    if (yt[k as usize] - ym).abs() > test2 {
+                        refine = true;
+                        break 'r360;
+                    }
+                }
+                let test = 2.0 * tol * uu.abs() + UUMIN;
+                if (uu - uum).abs() > test {
+                    refine = true;
+                }
+            }
+            if refine {
+                // label 410
+                i += 1;
+                let iu_ = i as usize;
+                x[iu_] = x[iu_ - 1];
+                x[iu_ - 1] = xm;
+                for il in 1..=nl {
+                    y[yi(il, i)] = y[yi(il, i - 1)];
+                    y[yi(il, i - 1)] = yt[il as usize];
+                }
+                continue;
+            }
+            // label 360
+            j += 1;
+            if j >= jmax {
+                c.error("calcem", "storage exceeded.", " ");
+            }
+            if j > 1 {
+                xsi_e += (x[iu_] - xlast) * (y[yi(1, i)] + ylast) * HALF;
+            }
+            if j > 1 {
+                let mut uu = 0.0f64;
+                let mut u2 = 0.0f64;
+                let mut u3 = 0.0f64;
+                let nll = 3;
+                for il in 2..=nl {
+                    legndr(y[yi(il, i)], &mut p, nll);
+                    uu += p[1];
+                    u2 += p[2];
+                    u3 += p[3];
+                }
+                uu /= (nl - 1) as f64;
+                uu *= y[yi(1, i)];
+                u2 /= (nl - 1) as f64;
+                u3 /= (nl - 1) as f64;
+                u2 *= y[yi(1, i)];
+                u3 *= y[yi(1, i)];
+                ubar_e += HALF * (x[iu_] - xlast) * (uu + ulast);
+                p2_e += HALF * (x[iu_] - xlast) * (u2 + u2last);
+                p3_e += HALF * (x[iu_] - xlast) * (u3 + u3last);
+            }
+            if !(j != 3 || xsi_e >= TOLMIN) {
+                j = 2;
+            }
+            // label 380
+            let jscr = 7 + (j - 1) * (nl + 1);
+            sc[jscr] = x[iu_];
+            if y[yi(1, i)] >= EM9 {
+                sc[1 + jscr] = sigfig(y[yi(1, i)], 9, 0);
+            } else {
+                sc[1 + jscr] = sigfig(y[yi(1, i)], 8, 0);
+            }
+            for il in 2..=nl {
+                let mut v = sigfig(y[yi(il, i)], 9, 0);
+                clamp_cos(c, &mut v, "1cos=", enow, sc[jscr]);
+                sc[il + jscr] = v;
+            }
+            xlast = x[iu_];
+            ylast = y[yi(1, i)];
+            if ylast != ZERO {
+                jnz = Some(j);
+            }
+            ulast = 0.0;
+            u2last = 0.0;
+            u3last = 0.0;
+            let nll = 3;
+            for il in 2..=nl {
+                legndr(y[yi(il, i)], &mut p, nll);
+                ulast += p[1];
+                u2last += p[2];
+                u3last += p[3];
+            }
+            ulast = ulast * y[yi(1, i)] / (nl - 1) as f64;
+            u2last = u2last * y[yi(1, i)] / (nl - 1) as f64;
+            u3last = u3last * y[yi(1, i)] / (nl - 1) as f64;
+            i -= 1;
+            if i >= 2 {
+                continue;
+            }
+            jbeta += 1;
+            if jbeta <= nbeta {
+                continue 'beta;
+            }
+            for il in 1..=nl {
+                y[yi(il, i)] = 0.0;
+            }
+            break 'beta;
+        }
+    }
+
+    //--add the last point (label 430)
+    let iu_ = i as usize;
+    j += 1;
+    xsi_e += (x[iu_] - xlast) * (y[yi(1, i)] + ylast) * HALF;
+    let uu = 0.0f64;
+    let u2 = 0.0f64;
+    let u3 = 0.0f64;
+    ubar_e += HALF * (x[iu_] - xlast) * (uu + ulast);
+    p2_e += HALF * (x[iu_] - xlast) * (u2 + u2last);
+    p3_e += HALF * (x[iu_] - xlast) * (u3 + u3last);
+    xsi_e = sigfig(xsi_e, 9, 0);
+    sc[7 + (nl + 1) * (j - 1)] = x[iu_];
+    let jscr = 7 + (j - 1) * (nl + 1);
+    if y[yi(1, i)] >= EM9 {
+        sc[1 + jscr] = sigfig(y[yi(1, i)], 9, 0);
+    } else {
+        sc[1 + jscr] = sigfig(y[yi(1, i)], 8, 0);
+    }
+    for il in 2..=nl {
+        let mut v = sigfig(y[yi(il, i)], 9, 0);
+        clamp_cos(c, &mut v, "2cos", enow, sc[jscr]);
+        sc[il + jscr] = v;
+    }
+    if y[yi(1, 1)] != ZERO {
+        jnz = Some(j);
+    }
+    EmuOut {
+        ok: true,
+        enow,
+        xsi: xsi_e,
+        ubar: ubar_e,
+        p2: p2_e,
+        p3: p3_e,
+        j,
+        jnz,
+        nbin: if nbin == i32::MIN { None } else { Some(nbin) },
+        sc,
+    }
+}
+
+/// The result of one incident energy of the e-ep-mu loop of `calcem`.
+#[derive(Default)]
+struct EpmOut {
+    /// false: not computed (a worker gave up); the main program computes it
+    ok: bool,
+    enow: f64,
+    xsi: f64,
+    ubar: f64,
+    sum: f64,
+    nmu: i32,
+    /// uj(1..nmu), sj(1..nmu) (index 0 unused)
+    uj: Vec<f64>,
+    sj: Vec<f64>,
+    /// for each cosine uj(il): yu(0..2*nep+2) from sigu, nep=nint(yu(2))
+    yus: Vec<Vec<f64>>,
+}
+
+/// One incident energy ie of the e-ep-mu loop of `calcem` (labels 530 to
+/// 580), and the sigu result for each cosine that the loop writes later.
+fn epm_energy(inp: &CeIn, c: &mut Ctx, ie: i32) -> EpmOut {
+    const NEMAX: i32 = 5000;
+    const MUMAX: i32 = 300;
+    const IMAX: i32 = 20;
+    const TOLMIN: f64 = 5.0e-7;
+    const HALF: f64 = 0.5e0;
+    const BREAK: f64 = 3000.0e0;
+    let egrid = |i: i32| EGRID[(i - 1) as usize];
+    let sp = &inp.sp;
+    let (tev, tol, temp) = (inp.tev, inp.tol, inp.temp);
+    let mut x = [0.0f64; IMAX as usize + 2];
+    let mut yy = [0.0f64; IMAX as usize + 2];
+    let mut yu = vec![0.0f64; 2 * NEMAX as usize + 8];
+    let mut uj = vec![0.0f64; MUMAX as usize + 2];
+    let mut sj = vec![0.0f64; MUMAX as usize + 2];
+    let xsi_e;
+    let mut ubar_e;
+    let mut enow;
+    enow = egrid(ie);
+    if ie > 1 && temp > BREAK {
+        enow = enow * temp / BREAK;
+    }
+    enow = sigfig(enow, 8, 0);
+                    let mut j = 0i32;
+    let mut sum = 0.0f64;
+    let mut u = -1.0f64;
+    x[2] = u;
+    sp.sigu(enow, u, tev, &mut yu, NEMAX, tol);
+    yy[2] = yu[1];
+    let mut xl = x[2];
+    let mut yl = yy[2];
+    u = 1.0;
+    x[1] = u;
+    sp.sigu(enow, u, tev, &mut yu, NEMAX, tol);
+    yy[1] = yu[1];
+    let mut i = 2usize;
+    loop {
+        // label 530
+        let mut split = false;
+        let mut xm = 0.0;
+        'l560: {
+            if i == IMAX as usize {
+                break 'l560;
+            }
+            xm = HALF * (x[i - 1] + x[i]);
+            xm = sigfig(xm, 7, 0);
+            if xm <= x[i] || xm >= x[i - 1] {
+                break 'l560;
+            }
+            sp.sigu(enow, xm, tev, &mut yu, NEMAX, tol);
+            if x[i - 1] - x[i] > 0.25 {
+                split = true;
+                break 'l560;
+            }
+            let ym = yy[i] + (xm - x[i]) * (yy[i - 1] - yy[i]) / (x[i - 1] - x[i]);
+            if (yu[1] - ym).abs() > 2.0 * tol * ym + TOLMIN {
+                split = true;
+            }
+        }
+        if split {
+            // label 575
+            i += 1;
+            x[i] = x[i - 1];
+            x[i - 1] = xm;
+            yy[i] = yy[i - 1];
+            yy[i - 1] = yu[1];
+            continue;
+        }
+        // label 560
+        j += 1;
+        if j > MUMAX - 1 {
+            c.error("calcem", "too many angles", "see mumax");
+        }
+        uj[j as usize] = x[i];
+        sj[j as usize] = yy[i];
+        if j > 1 {
+            sum += HALF * (yy[i] + yl) * (x[i] - xl);
+            xl = x[i];
+            yl = yy[i];
+        }
+        i -= 1;
+        if i >= 2 {
+            continue;
+        }
+        break;
+    }
+    // label 580
+    j += 1;
+    uj[j as usize] = x[1];
+    sj[j as usize] = yy[1];
+    let nmu = j;
+    ubar_e = 0.0;
+    sum += HALF * (yy[1] + yl) * (x[1] - xl);
+    xsi_e = sum / 2.0;
+    for i in 2..=nmu as usize {
+        ubar_e += HALF * (uj[i] - uj[i - 1]) * (sj[i] + sj[i - 1]) * (uj[i] + uj[i - 1]);
+    }
+    ubar_e = HALF * ubar_e / sum;
+    let mut yus = Vec::with_capacity(nmu.max(0) as usize);
+    for il in 1..=nmu {
+        let u = uj[il as usize];
+        sp.sigu(enow, u, tev, &mut yu, NEMAX, tol);
+        let nep = nint(yu[2]).max(0) as usize;
+        yus.push(yu[..(2 * nep + 3).min(yu.len())].to_vec());
+    }
+    uj.truncate(nmu.max(0) as usize + 1);
+    sj.truncate(nmu.max(0) as usize + 1);
+    EpmOut { ok: true, enow, xsi: xsi_e, ubar: ubar_e, sum, nmu, uj, sj, yus }
+}
+
+/// Start workers that compute the energies 1..nne of a `calcem` loop ahead
+/// of the main program with f (None with one thread). A worker uses a
+/// detached Ctx: if the work tried to write anything or stopped, its result
+/// is the default (not ok) and the main program computes that energy itself,
+/// so the output never depends on the threads.
+fn ce_workers<R: Send + Default + 'static>(
+    inp: &std::sync::Arc<CeIn>, nne: i32, f: fn(&CeIn, &mut Ctx, i32) -> R,
+) -> Option<crate::prefetch::RunAhead<R>> {
+    let nthr = crate::util::threads();
+    if nthr <= 1 || nne < 2 {
+        return None;
+    }
+    let workers: Vec<(std::sync::Arc<CeIn>, Ctx)> =
+        (0..nthr).map(|_| (inp.clone(), Ctx::new(crate::fio::Io::detached()))).collect();
+    Some(crate::prefetch::RunAhead::start(workers, 1, nne as usize + 1, 4 * nthr, move |w, q| {
+        w.1.io.touched = false;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&w.0, &mut w.1, q as i32)));
+        match r {
+            Ok(o) if !w.1.io.touched => o,
+            _ => R::default(),
+        }
+    }))
+}
+
 impl Thermr {
     /// `calcem`: incoherent inelastic cross sections and distributions.
     fn calcem(
@@ -2233,31 +2736,20 @@ impl Thermr {
         const MUMAX: i32 = 300;
         const IMAX: i32 = 20;
         const EPS: f64 = 1.0e-4;
-        const TOLMIN: f64 = 5.0e-7;
-        const HALF: f64 = 0.5e0;
         const THERM: f64 = 0.0253e0;
-        const BREAK: f64 = 3000.0e0;
-        const EM9: f64 = 1.0e-9;
         const ZERO: f64 = 0.0;
         const TENTH: f64 = 0.1e0;
         const UP: f64 = 1.1e0;
         const DN: f64 = 0.9e0;
-        const UUMIN: f64 = 0.00001e0;
         const YUMIN: f64 = 2.0e-7;
         const NLPMX: i32 = 10;
         let egrid = |i: i32| EGRID[(i - 1) as usize];
         let (mut nb, mut nw) = (0i32, 0i32);
         let mut ex = [0.0f64; IMAX as usize + 2];
-        let mut x = [0.0f64; IMAX as usize + 2];
-        let mut y = vec![0.0f64; (NLMAX * (IMAX + 2)) as usize];
-        let yi = |il: i32, i: i32| ((il - 1) + NLMAX * (i - 1)) as usize;
-        let mut yt = [0.0f64; NLMAX as usize + 2];
-        let mut yy = [0.0f64; IMAX as usize + 2];
         let mut yu = vec![0.0f64; 2 * NEMAX as usize + 8];
         let mut ubar = [0.0f64; NGRID as usize + 2];
         let mut p2 = [0.0f64; NGRID as usize + 2];
         let mut p3 = [0.0f64; NGRID as usize + 2];
-        let mut p = [0.0f64; 8];
         let mut uj = [0.0f64; MUMAX as usize + 2];
         let mut sj = [0.0f64; MUMAX as usize + 2];
 
@@ -2555,7 +3047,11 @@ impl Thermr {
 
         // label 300
         let tev = t * BK;
+        let alpha_up = ascending(&alpha, nalpha);
+        let beta_up = ascending(&beta, nbeta);
         let mut sp = Sab {
+            alpha_up,
+            beta_up,
             nalpha,
             nbeta,
             alpha,
@@ -2633,244 +3129,31 @@ impl Thermr {
             }
 
             //--loop over given incident energy grid.
-            let mut xlast = 0.0f64;
-            let mut ylast = 0.0f64;
-            let mut ulast = 0.0f64;
-            let mut u2last = 0.0f64;
-            let mut u3last = 0.0f64;
+            let inp = std::sync::Arc::new(CeIn { sp: sp.clone(), nl, nnl, nbeta, jmax, tev, tol, temp });
+            let mut ra = ce_workers(&inp, nne, emu_energy);
             let mut jnz = 0i32;
-            let mut xm = 0.0f64;
-            let mut ym = 0.0f64;
             for ie in 1..=nne {
                 let iu = ie as usize;
-                enow = egrid(ie);
-                if temp > BREAK {
-                    let tone = THERM / BK;
-                    let elo = egrid(1);
-                    enow = elo * exp(log(enow / elo) * log((temp / tone) * egrid(NGRID) / elo) / log(egrid(NGRID) / elo));
-                }
-                enow = sigfig(enow, 8, 0);
+                let o = match ra.as_mut().and_then(|r| r.take(ie as usize)) {
+                    Some(o) if o.ok => o,
+                    _ => emu_energy(&inp, c, ie),
+                };
+                enow = o.enow;
                 esi[ie] = enow;
-                xsi[ie] = 0.0;
-                ubar[iu] = 0.0;
-                p2[iu] = 0.0;
-                p3[iu] = 0.0;
-                let mut ep = 0.0f64;
-                x[1] = ep;
-                sp.sigl(c, &mut self.nbin, enow, ep, nnl, tev, &mut yt, tol);
-                for il in 1..=nl {
-                    y[yi(il, 1)] = yt[il as usize];
+                xsi[ie] = o.xsi;
+                ubar[iu] = o.ubar;
+                p2[iu] = o.p2;
+                p3[iu] = o.p3;
+                if let Some(nb) = o.nbin {
+                    self.nbin = nb;
                 }
-                let mut jbeta = -nbeta;
-                if self.lasym > 0 {
-                    jbeta = 1;
+                for k in 7..o.sc.0.len() {
+                    scr[k as i32] = o.sc.0[k];
                 }
-                let mut j = 0i32;
-                let mut iskip = 0;
-                let mut i;
-                // label 311: loop over beta values
-                'beta: loop {
-                    x[2] = x[1];
-                    for il in 1..=nl {
-                        y[yi(il, 2)] = y[yi(il, 1)];
-                    }
-                    loop {
-                        // label 313
-                        if jbeta == 0 {
-                            jbeta = 1;
-                        }
-                        let bt = if self.lat == 1 { sp.tevz } else { tev };
-                        if jbeta <= 0 {
-                            ep = enow - sp.beta[-jbeta] * bt;
-                            if ep == enow {
-                                ep = sigfig(enow, 8, -1);
-                            } else {
-                                ep = sigfig(ep, 8, 0);
-                            }
-                        } else {
-                            ep = enow + sp.beta[jbeta] * bt;
-                            if ep == enow {
-                                ep = sigfig(enow, 8, 1);
-                                iskip = 1;
-                            } else {
-                                ep = sigfig(ep, 8, 0);
-                            }
-                        }
-                        if ep > x[2] {
-                            break;
-                        }
-                        jbeta += 1;
-                    }
-                    // label 316
-                    ep = sigfig(ep, 8, 0);
-                    x[1] = ep;
-                    sp.sigl(c, &mut self.nbin, enow, ep, nnl, tev, &mut yt, tol);
-                    for il in 1..=nl {
-                        y[yi(il, 1)] = yt[il as usize];
-                    }
-                    i = 2i32;
-                    loop {
-                        // label 330
-                        let iu_ = i as usize;
-                        let mut refine = false;
-                        'r360: {
-                            if i == IMAX {
-                                break 'r360;
-                            }
-                            if iskip == 1 {
-                                iskip = 0;
-                                break 'r360;
-                            }
-                            if HALF * (y[yi(1, i - 1)] + y[yi(1, i)]) * (x[iu_ - 1] - x[iu_]) < TOLMIN {
-                                break 'r360;
-                            }
-                            xm = HALF * (x[iu_ - 1] + x[iu_]);
-                            xm = sigfig(xm, 8, 0);
-                            if xm <= x[iu_] || xm >= x[iu_ - 1] {
-                                break 'r360;
-                            }
-                            sp.sigl(c, &mut self.nbin, enow, xm, nnl, tev, &mut yt, tol);
-                            let mut uu = 0.0f64;
-                            let mut uum = 0.0f64;
-                            for k in 1..=nl {
-                                c.terp1(x[iu_], y[yi(k, i)], x[iu_ - 1], y[yi(k, i - 1)], xm, &mut ym, 2);
-                                if k > 1 {
-                                    uu += yt[k as usize];
-                                }
-                                if k > 1 {
-                                    uum += ym;
-                                }
-                                let test = tol * yt[k as usize].abs();
-                                let mut test2 = test;
-                                if k > 1 {
-                                    test2 = tol;
-                                }
-                                if (yt[k as usize] - ym).abs() > test2 {
-                                    refine = true;
-                                    break 'r360;
-                                }
-                            }
-                            let test = 2.0 * tol * uu.abs() + UUMIN;
-                            if (uu - uum).abs() > test {
-                                refine = true;
-                            }
-                        }
-                        if refine {
-                            // label 410
-                            i += 1;
-                            let iu_ = i as usize;
-                            x[iu_] = x[iu_ - 1];
-                            x[iu_ - 1] = xm;
-                            for il in 1..=nl {
-                                y[yi(il, i)] = y[yi(il, i - 1)];
-                                y[yi(il, i - 1)] = yt[il as usize];
-                            }
-                            continue;
-                        }
-                        // label 360
-                        j += 1;
-                        if j >= jmax {
-                            c.error("calcem", "storage exceeded.", " ");
-                        }
-                        if j > 1 {
-                            xsi[ie] += (x[iu_] - xlast) * (y[yi(1, i)] + ylast) * HALF;
-                        }
-                        if j > 1 {
-                            let mut uu = 0.0f64;
-                            let mut u2 = 0.0f64;
-                            let mut u3 = 0.0f64;
-                            let nll = 3;
-                            for il in 2..=nl {
-                                legndr(y[yi(il, i)], &mut p, nll);
-                                uu += p[1];
-                                u2 += p[2];
-                                u3 += p[3];
-                            }
-                            uu /= (nl - 1) as f64;
-                            uu *= y[yi(1, i)];
-                            u2 /= (nl - 1) as f64;
-                            u3 /= (nl - 1) as f64;
-                            u2 *= y[yi(1, i)];
-                            u3 *= y[yi(1, i)];
-                            ubar[iu] += HALF * (x[iu_] - xlast) * (uu + ulast);
-                            p2[iu] += HALF * (x[iu_] - xlast) * (u2 + u2last);
-                            p3[iu] += HALF * (x[iu_] - xlast) * (u3 + u3last);
-                        }
-                        if !(j != 3 || xsi[ie] >= TOLMIN) {
-                            j = 2;
-                        }
-                        // label 380
-                        let jscr = 7 + (j - 1) * (nl + 1);
-                        scr[jscr] = x[iu_];
-                        if y[yi(1, i)] >= EM9 {
-                            scr[1 + jscr] = sigfig(y[yi(1, i)], 9, 0);
-                        } else {
-                            scr[1 + jscr] = sigfig(y[yi(1, i)], 8, 0);
-                        }
-                        for il in 2..=nl {
-                            let mut v = sigfig(y[yi(il, i)], 9, 0);
-                            clamp_cos(c, &mut v, "1cos=", enow, scr[jscr]);
-                            scr[il + jscr] = v;
-                        }
-                        xlast = x[iu_];
-                        ylast = y[yi(1, i)];
-                        if ylast != ZERO {
-                            jnz = j;
-                        }
-                        ulast = 0.0;
-                        u2last = 0.0;
-                        u3last = 0.0;
-                        let nll = 3;
-                        for il in 2..=nl {
-                            legndr(y[yi(il, i)], &mut p, nll);
-                            ulast += p[1];
-                            u2last += p[2];
-                            u3last += p[3];
-                        }
-                        ulast = ulast * y[yi(1, i)] / (nl - 1) as f64;
-                        u2last = u2last * y[yi(1, i)] / (nl - 1) as f64;
-                        u3last = u3last * y[yi(1, i)] / (nl - 1) as f64;
-                        i -= 1;
-                        if i >= 2 {
-                            continue;
-                        }
-                        jbeta += 1;
-                        if jbeta <= nbeta {
-                            continue 'beta;
-                        }
-                        for il in 1..=nl {
-                            y[yi(il, i)] = 0.0;
-                        }
-                        break 'beta;
-                    }
+                if let Some(z) = o.jnz {
+                    jnz = z;
                 }
-
-                //--add the last point (label 430)
-                let iu_ = i as usize;
-                j += 1;
-                xsi[ie] += (x[iu_] - xlast) * (y[yi(1, i)] + ylast) * HALF;
-                let uu = 0.0f64;
-                let u2 = 0.0f64;
-                let u3 = 0.0f64;
-                ubar[iu] += HALF * (x[iu_] - xlast) * (uu + ulast);
-                p2[iu] += HALF * (x[iu_] - xlast) * (u2 + u2last);
-                p3[iu] += HALF * (x[iu_] - xlast) * (u3 + u3last);
-                xsi[ie] = sigfig(xsi[ie], 9, 0);
-                scr[7 + (nl + 1) * (j - 1)] = x[iu_];
-                let jscr = 7 + (j - 1) * (nl + 1);
-                if y[yi(1, i)] >= EM9 {
-                    scr[1 + jscr] = sigfig(y[yi(1, i)], 9, 0);
-                } else {
-                    scr[1 + jscr] = sigfig(y[yi(1, i)], 8, 0);
-                }
-                for il in 2..=nl {
-                    let mut v = sigfig(y[yi(il, i)], 9, 0);
-                    clamp_cos(c, &mut v, "2cos", enow, scr[jscr]);
-                    scr[il + jscr] = v;
-                }
-                if y[yi(1, 1)] != ZERO {
-                    jnz = j;
-                }
+                let mut j = o.j;
                 if jnz < j {
                     j = jnz + 1;
                 }
@@ -2983,89 +3266,22 @@ impl Thermr {
             if self.iinc != 1 && self.iinc != 2 {
                 c.error("sig", "illegal option.", " ");
             }
+            let inp = std::sync::Arc::new(CeIn { sp: sp.clone(), nl, nnl, nbeta, jmax, tev, tol, temp });
+            let mut ra = ce_workers(&inp, nne, epm_energy);
             for ie in 1..=nne {
                 let iu = ie as usize;
-                enow = egrid(ie);
-                if ie > 1 && temp > BREAK {
-                    enow = enow * temp / BREAK;
-                }
-                enow = sigfig(enow, 8, 0);
+                let o = match ra.as_mut().and_then(|r| r.take(ie as usize)) {
+                    Some(o) if o.ok => o,
+                    _ => epm_energy(&inp, c, ie),
+                };
+                enow = o.enow;
                 esi[ie] = enow;
-                let mut j = 0i32;
-                let mut sum = 0.0f64;
-                let mut u = -1.0f64;
-                x[2] = u;
-                sp.sigu(enow, u, tev, &mut yu, NEMAX, tol);
-                yy[2] = yu[1];
-                let mut xl = x[2];
-                let mut yl = yy[2];
-                u = 1.0;
-                x[1] = u;
-                sp.sigu(enow, u, tev, &mut yu, NEMAX, tol);
-                yy[1] = yu[1];
-                let mut i = 2usize;
-                loop {
-                    // label 530
-                    let mut split = false;
-                    let mut xm = 0.0;
-                    'l560: {
-                        if i == IMAX as usize {
-                            break 'l560;
-                        }
-                        xm = HALF * (x[i - 1] + x[i]);
-                        xm = sigfig(xm, 7, 0);
-                        if xm <= x[i] || xm >= x[i - 1] {
-                            break 'l560;
-                        }
-                        sp.sigu(enow, xm, tev, &mut yu, NEMAX, tol);
-                        if x[i - 1] - x[i] > 0.25 {
-                            split = true;
-                            break 'l560;
-                        }
-                        let ym = yy[i] + (xm - x[i]) * (yy[i - 1] - yy[i]) / (x[i - 1] - x[i]);
-                        if (yu[1] - ym).abs() > 2.0 * tol * ym + TOLMIN {
-                            split = true;
-                        }
-                    }
-                    if split {
-                        // label 575
-                        i += 1;
-                        x[i] = x[i - 1];
-                        x[i - 1] = xm;
-                        yy[i] = yy[i - 1];
-                        yy[i - 1] = yu[1];
-                        continue;
-                    }
-                    // label 560
-                    j += 1;
-                    if j > MUMAX - 1 {
-                        c.error("calcem", "too many angles", "see mumax");
-                    }
-                    uj[j as usize] = x[i];
-                    sj[j as usize] = yy[i];
-                    if j > 1 {
-                        sum += HALF * (yy[i] + yl) * (x[i] - xl);
-                        xl = x[i];
-                        yl = yy[i];
-                    }
-                    i -= 1;
-                    if i >= 2 {
-                        continue;
-                    }
-                    break;
-                }
-                // label 580
-                j += 1;
-                uj[j as usize] = x[1];
-                sj[j as usize] = yy[1];
-                let nmu = j;
-                ubar[iu] = 0.0;
-                sum += HALF * (yy[1] + yl) * (x[1] - xl);
-                xsi[ie] = sum / 2.0;
-                for i in 2..=nmu as usize {
-                    ubar[iu] += HALF * (uj[i] - uj[i - 1]) * (sj[i] + sj[i - 1]) * (uj[i] + uj[i - 1]);
-                }
-                ubar[iu] = HALF * ubar[iu] / sum;
+                xsi[ie] = o.xsi;
+                ubar[iu] = o.ubar;
+                let sum = o.sum;
+                let nmu = o.nmu;
+                uj[..o.uj.len()].copy_from_slice(&o.uj);
+                sj[..o.sj.len()].copy_from_slice(&o.sj);
                 if self.iprint == 2 {
                     c.io.so(&format!(
                         "\n{} enow {}   xsec {}   mubar  {}",
@@ -3101,7 +3317,8 @@ impl Thermr {
                 self.ncds += 1;
                 for il in 1..=nmu {
                     let u = uj[il as usize];
-                    sp.sigu(enow, u, tev, &mut yu, NEMAX, tol);
+                    let yv = &o.yus[(il - 1) as usize];
+                    yu[..yv.len()].copy_from_slice(yv);
                     let mut nep = nint(yu[2]);
                     let mut j = 0i32;
                     for i in 1..=nep {

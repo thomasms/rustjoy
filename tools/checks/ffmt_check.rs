@@ -110,6 +110,21 @@ fn main() {
         }
         let _ = j;
     }
+    // ENDF 11-column reals (a11), from a blank field and from a filled one
+    for _ in 0..20_000_000u64 {
+        let x = value(&mut r);
+        if !x.is_finite() {
+            continue;
+        }
+        let start = if r.below(2) == 0 { [b' '; 11] } else { *b"abcdefghijk" };
+        let (mut a, mut b) = (start, start);
+        rustjoy::endf::a11(x, &mut a);
+        rustjoy::endf::a11_ref(x, &mut b);
+        if a != b {
+            fail(&format!("a11({:e})", x), &String::from_utf8_lossy(&a), &String::from_utf8_lossy(&b));
+        }
+        count += 1;
+    }
     // input: random fields over a number alphabet, and ENDF-style numbers
     let alpha = b" 0123456789.+-eEdDqQx\t";
     let same = |a: &Result<f64, ffmt::ReadError>, b: &Result<f64, ffmt::ReadError>| match (a, b) {

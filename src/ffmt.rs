@@ -45,6 +45,163 @@ impl std::fmt::Write for Buf {
     }
 }
 
+// ------------------------------------------------------------------
+// Exact decimal digits with integer arithmetic. These give the same
+// digits as Rust's `{:.*e}` and `{:.*}` (exact value, round half to even)
+// without its general-purpose machinery; when a value needs more than 128
+// bits they return None and the callers use the formatter.
+
+/// ax = m*2^e for a finite ax >= 0.
+#[inline]
+fn decompose(ax: f64) -> (u64, i32) {
+    let b = ax.to_bits();
+    let ex = ((b >> 52) & 0x7ff) as i32;
+    let fr = b & ((1u64 << 52) - 1);
+    if ex == 0 {
+        (fr, -1074)
+    } else {
+        (fr | (1u64 << 52), ex - 1075)
+    }
+}
+
+const POW10: [u128; 39] = {
+    let mut t = [1u128; 39];
+    let mut i = 1;
+    while i < 39 {
+        t[i] = t[i - 1] * 10;
+        i += 1;
+    }
+    t
+};
+
+/// floor(m*2^e*10^s) and where the remainder r lies: 0 if r=0, 1 if
+/// 0<r<1/2, 2 if r=1/2, 3 if r>1/2. None if it does not fit in u128.
+#[inline]
+fn scaled(m: u64, e: i32, s: i32) -> Option<(u128, u8)> {
+    if m == 0 {
+        return Some((0, 0));
+    }
+    let cmp = |r: u128, den: u128| -> u8 {
+        if r == 0 {
+            0
+        } else {
+            // den < 2^127, so 2r does not overflow
+            match (2 * r).cmp(&den) {
+                std::cmp::Ordering::Less => 1,
+                std::cmp::Ordering::Equal => 2,
+                std::cmp::Ordering::Greater => 3,
+            }
+        }
+    };
+    if s >= 0 {
+        let p = *POW10.get(s as usize)?;
+        let num = (m as u128).checked_mul(p)?;
+        if e >= 0 {
+            if e >= 127 || num.leading_zeros() <= e as u32 {
+                return None;
+            }
+            return Some((num << e, 0));
+        }
+        let sh = (-e) as u32;
+        if sh >= 127 {
+            return None;
+        }
+        let den = 1u128 << sh;
+        Some((num >> sh, cmp(num & (den - 1), den)))
+    } else {
+        let p = *POW10.get((-s) as usize)?;
+        let (num, den) = if e >= 0 {
+            if e >= 127 || (m as u128).leading_zeros() <= e as u32 {
+                return None;
+            }
+            ((m as u128) << e, p)
+        } else {
+            let sh = (-e) as u32;
+            if sh >= 127 || p.leading_zeros() <= sh + 1 {
+                return None;
+            }
+            (m as u128, p << sh)
+        };
+        if den >= 1u128 << 126 {
+            return None;
+        }
+        Some((num / den, cmp(num % den, den)))
+    }
+}
+
+#[inline]
+fn round_even(q: u128, f: u8) -> u128 {
+    if f == 3 || (f == 2 && q & 1 == 1) {
+        q + 1
+    } else {
+        q
+    }
+}
+
+/// The n significant digits of a finite ax > 0 as Rust's `{:.(n-1)e}`
+/// gives them: (q, k) with 10^(n-1) <= q < 10^n and exponent k.
+fn sci_digits(ax: f64, n: usize) -> Option<(u64, i32)> {
+    if !(1..=19).contains(&n) || !(ax > 0.0) || !ax.is_finite() {
+        return None;
+    }
+    let (m, e) = decompose(ax);
+    let lo = POW10[n - 1];
+    let hi = POW10[n];
+    let mut k = ax.log10().floor() as i32;
+    for _ in 0..4 {
+        let s = n as i32 - 1 - k;
+        let (q, f) = scaled(m, e, s)?;
+        if q < lo {
+            k -= 1;
+            continue;
+        }
+        if q >= hi {
+            k += 1;
+            continue;
+        }
+        let mut q = round_even(q, f);
+        if q == hi {
+            q = lo;
+            k += 1;
+        }
+        return Some((q as u64, k));
+    }
+    None
+}
+
+/// Rust's `{:.dd}` of a finite ax >= 0 into b.
+fn fixed_digits(ax: f64, dd: usize, b: &mut Buf) -> bool {
+    if !ax.is_finite() || dd > 38 {
+        return false;
+    }
+    let (m, e) = decompose(ax);
+    let q = match scaled(m, e, dd as i32) {
+        Some((q, f)) => round_even(q, f),
+        None => return false,
+    };
+    let mut dg = [0u8; 40];
+    let mut nd = 0;
+    let mut v = q;
+    while v > 0 {
+        dg[nd] = b'0' + (v % 10) as u8;
+        v /= 10;
+        nd += 1;
+    }
+    // digits most significant first: dg[nd-1] .. dg[0]
+    let digit = |j: usize| -> u8 { if j < nd { dg[j] } else { b'0' } };
+    let nint = if nd > dd { nd - dd } else { 1 };
+    for j in (dd..dd + nint).rev() {
+        b.push(digit(j));
+    }
+    if dd > 0 {
+        b.push(b'.');
+        for j in (0..dd).rev() {
+            b.push(digit(j));
+        }
+    }
+    !b.over
+}
+
 /// Right-justify `s` in a field of width w (stars if it does not fit).
 #[inline]
 fn rjust_bytes(s: &[u8], w: usize) -> String {
@@ -106,14 +263,17 @@ pub fn a(s: &str, w: usize) -> String {
 
 /// `kP,Fw.d`. Same rules as `fp_ref` (the digits come from Rust's exact
 /// decimal conversion in both); only the string handling differs.
-pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
+fn fp_core(x: f64, w: usize, d: usize, k: i32) -> Option<Buf> {
     use std::fmt::Write;
     let neg = x.is_sign_negative();
     let ax = x.abs();
     let dd = (d as i32 + k).max(0) as usize;
     let mut raw = Buf::new();
-    if write!(raw, "{:.*}", dd, ax).is_err() {
-        return fp_ref(x, w, d, k);
+    if !fixed_digits(ax, dd, &mut raw) {
+        raw = Buf::new();
+        if write!(raw, "{:.*}", dd, ax).is_err() {
+            return None;
+        }
     }
     let raw = raw.bytes();
     // body: the decimal string with the point moved right by k
@@ -165,7 +325,7 @@ pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
         }
     }
     if body.over {
-        return fp_ref(x, w, d, k);
+        return None;
     }
     if d == 0 && !body.bytes().ends_with(b".") && !body.bytes().contains(&b'.') {
         body.push(b'.');
@@ -181,9 +341,66 @@ pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
         s.push(c);
     }
     if s.over {
-        return fp_ref(x, w, d, k);
+        return None;
     }
-    rjust_bytes(s.bytes(), w)
+    Some(s)
+}
+
+pub fn fp(x: f64, w: usize, d: usize, k: i32) -> String {
+    match fp_core(x, w, d, k) {
+        Some(s) => rjust_bytes(s.bytes(), w),
+        None => fp_ref(x, w, d, k),
+    }
+}
+
+/// Right-justify `s` into dst (stars if it does not fit).
+#[inline]
+fn rjust_into(s: &[u8], dst: &mut [u8]) {
+    let w = dst.len();
+    if s.len() > w {
+        dst.fill(b'*');
+    } else {
+        dst[..w - s.len()].fill(b' ');
+        dst[w - s.len()..].copy_from_slice(s);
+    }
+}
+
+/// `fp` written into dst (w = dst.len()) without a heap string.
+pub fn fp_into(x: f64, d: usize, k: i32, dst: &mut [u8]) {
+    let w = dst.len();
+    match fp_core(x, w, d, k) {
+        Some(s) => rjust_into(s.bytes(), dst),
+        None => {
+            let r = fp_ref(x, w, d, k);
+            rjust_into(r.as_bytes(), dst)
+        }
+    }
+}
+
+/// `i` written into dst (w = dst.len()) without a heap string.
+pub fn i_into(v: i32, dst: &mut [u8]) {
+    let mut d = [0u8; 12];
+    let mut n = 0;
+    let mut u = (v as i64).unsigned_abs();
+    loop {
+        d[n] = b'0' + (u % 10) as u8;
+        n += 1;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    let mut s = [0u8; 12];
+    let mut m = 0;
+    if v < 0 {
+        s[0] = b'-';
+        m = 1;
+    }
+    for k in (0..n).rev() {
+        s[m] = d[k];
+        m += 1;
+    }
+    rjust_into(&s[..m], dst)
 }
 
 /// `Fw.d` (scale factor 0).
@@ -205,6 +422,18 @@ pub fn ep(x: f64, w: usize, d: usize, k: i32) -> String {
     let mut e10: i32;
     if ax == 0.0 {
         e10 = 0;
+    } else if let Some((q, k10)) = sci_digits(ax, nsig.saturating_sub(1) + 1) {
+        let n = nsig.saturating_sub(1) + 1;
+        let mut dg = [0u8; 20];
+        let mut v = q;
+        for j in (0..n).rev() {
+            dg[j] = b'0' + (v % 10) as u8;
+            v /= 10;
+        }
+        for &c in &dg[..n] {
+            mant.push(c);
+        }
+        e10 = k10;
     } else {
         let mut raw = Buf::new();
         if write!(raw, "{:.*e}", nsig.saturating_sub(1), ax).is_err() {

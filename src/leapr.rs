@@ -754,7 +754,6 @@ impl Leapr {
         let c2 = 1.42f64;
         let c3 = 0.2f64;
         let c4 = 10.0f64;
-        let tiny = 1.0e-30f64;
         let (nalpha, nbeta, iprint) = (self.nalpha, self.nbeta, self.iprint);
         let (twt, cc, tbeta, f0) = (self.twt, self.c, self.tbeta, self.f0);
 
@@ -775,6 +774,7 @@ impl Leapr {
         let mut etab: Vec<f64> = Vec::new();
         let mut etab_delta = f64::NAN;
 
+        let (mut pf_hit, mut pf_miss) = (0u64, 0u64);
         //--alpha loop
         if iprint == 1 {
             c.io.so("\n sab checks\n      alpha      norm   sum rule");
@@ -827,39 +827,42 @@ impl Leapr {
                         "\n results after convolution \n     beta       s(alpha,beta)      ss(alpha,beta)     ss(alpha,-beta)",
                     );
                 }
+                // With more than one thread the betas are computed ahead in
+                // parallel (see `trans_pre`); sb is then set at the end of
+                // the alpha to what the serial loop leaves in it.
+                let nbt = nsd;
+                let (pre, info) = trans_pre(&sd, nbt, delta, &lap, &betan, nbeta, ndmax, al, f0, &sb);
+                let mut sbw: Option<RV> = None;
                 for ibeta in 1..=nbeta {
                     let mut jprt = (ibeta - 1) % self.nbint + 1;
                     if ibeta == nbeta {
                         jprt = 1;
                     }
-                    let mut s = 0.0f64;
                     let be = betan[ibeta];
-
-                    //--prepare table of continuous ss on new interval
-                    let nbt = nsd;
-                    sbfill(c, &mut sb, nbt, &mut delta, be, &lap, &betan, nbeta, ibeta, ndmax);
-
-                    //--convolve s-transport with s-continuous
-                    if etab_delta.to_bits() != delta.to_bits() || etab.len() < nbt as usize {
-                        etab_delta = delta;
-                        etab = (0..nbt.max(1) as usize).map(|m| exp(-(m as f64 * delta))).collect();
-                    }
-                    for k in 1..=nbt {
-                        let mut ff = (2 * ((k - 1) % 2 + 1)) as f64;
-                        if k == 1 || k == nbt {
-                            ff = 1.0;
+                    let s = if pre.is_empty() {
+                        trans_beta(
+                            c, &mut sb, &mut etab, &mut etab_delta, &sd, nbt, &mut delta, be, &lap, &betan, nbeta,
+                            ibeta, ndmax, al, f0, None,
+                        )
+                    } else {
+                        match pre[ibeta as usize] {
+                            Some((sv, d0, d1)) if delta.to_bits() == d0.to_bits() => {
+                                delta = d1;
+                                pf_hit += 1;
+                                sv
+                            }
+                            _ => {
+                                // computed here the way a worker does it
+                                pf_miss += 1;
+                                let w = sbw.get_or_insert_with(|| RV::new(sb.0.len()));
+                                let pt = Some((info.as_slice(), &sb));
+                                trans_beta(
+                                    c, w, &mut etab, &mut etab_delta, &sd, nbt, &mut delta, be, &lap, &betan, nbeta,
+                                    ibeta, ndmax, al, f0, pt,
+                                )
+                            }
                         }
-                        s = s + ff * sd[k] * sb[nbt + k - 1];
-                        s = s + ff * sd[k] * sb[nbt - k + 1] * etab[(k - 1) as usize];
-                    }
-                    s = s * delta / 3.0;
-                    if s < tiny {
-                        s = 0.0;
-                    }
-                    let st = terps(&sd, nbt, delta, be);
-                    if st > ZERO {
-                        s = s + exp(-al * f0) * st;
-                    }
+                    };
 
                     //--store results
                     self.ssm[(ibeta, ialpha, itemp)] = s;
@@ -870,6 +873,10 @@ impl Leapr {
                             c.io.so(&format!("{}{}{}{}", f(be, 10, 4), e1p(s1, 18, 5), e1p(s2, 20, 5), e1p(s, 20, 5)));
                         }
                     }
+                }
+
+                if !pre.is_empty() {
+                    sb_final(&mut sb, &info, nbt, &lap, &betan, nbeta);
                 }
 
                 //--check moments of calculated s(alpha,beta).
@@ -886,6 +893,10 @@ impl Leapr {
                     }
                 }
             }
+        }
+
+        if crate::util::pf_stats() {
+            eprintln!("leapr trans: {} betas from workers, {} computed here", pf_hit, pf_miss);
         }
 
         //--update effective temperature
@@ -2482,8 +2493,91 @@ fn terps(sd: &RV, nsd: i32, delta: f64, be: f64) -> f64 {
     0.0
 }
 
+/// The loop of sbfill for one beta: the points k = 1, 2, ... of the
+/// table, with delta increased where the Fortran increases it. The value of
+/// point k is computed, and given to set, only for lo < k <= hi; the search
+/// for the beta range runs for every point (as in the Fortran) when hi > 0,
+/// except for the points up to lo when mono is set: with betan strictly
+/// increasing the search ends at the same range from any start.
+/// Returns the number of points.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn sbfill_core(
+    nbt: i32, delta: &mut f64, be: f64, ls: &[f64], betan: &RV, nbeta: i32, lo: i32, hi: i32, mono: bool,
+    mut set: impl FnMut(i32, f64),
+) -> i32 {
+    let shade = 1.00001f64;
+    let slim = -225.0f64;
+    let bmin = -be - (nbt - 1) as f64 * *delta;
+    let bmax = -be + (nbt - 1) as f64 * *delta + *delta / 100.0;
+    let mut j = nbeta;
+    let mut k = 0;
+    let mut bet = bmin;
+    while bet <= bmax {
+        k = k + 1;
+        if hi > 0 && !(mono && k <= lo) {
+            let b = bet.abs();
+            // search for correct beta range
+            let mut idone = 0;
+            while idone == 0 {
+                if b > betan[j] {
+                    if j == nbeta && b < shade * betan[j] {
+                        idone = 1;
+                    } else {
+                        if j == nbeta {
+                            idone = 2;
+                        } else {
+                            // move up
+                            j = j + 1;
+                        }
+                    }
+                } else {
+                    if b > betan[j - 1] {
+                        idone = 1;
+                    } else {
+                        if j == 2 {
+                            idone = 1;
+                        } else {
+                            // move down
+                            j = j - 1;
+                        }
+                    }
+                }
+            }
+            if k > lo && k <= hi {
+                // interpolate in this range
+                if idone == 1 {
+                    // ls(j) is log(s(j)), or slim if s(j) <= 0
+                    let st = ls[j as usize];
+                    let stm = ls[(j - 1) as usize];
+                    let mut v = st + (b - betan[j]) * (stm - st) / (betan[j - 1] - betan[j]);
+                    if bet > ZERO {
+                        v = v - bet;
+                    }
+                    let arg = v;
+                    v = 0.0;
+                    if arg > slim {
+                        v = exp(arg);
+                    }
+                    set(k, v);
+                } else {
+                    set(k, 0.0);
+                }
+            }
+        }
+        // if delta is too small for the current value of beta, increase it
+        while bet == bet + *delta {
+            *delta = *delta * 10.0;
+        }
+        bet = bet + *delta;
+    }
+    k
+}
+
 /// s(beta) on a new energy grid for convolution with a diffusion or
 /// free-gas shape. delta can be increased (as in the Fortran).
+/// Returns the number of points it set (sb(1..k)).
+#[allow(clippy::too_many_arguments)]
 fn sbfill(
     c: &mut Ctx,
     sb: &mut RV,
@@ -2495,72 +2589,217 @@ fn sbfill(
     nbeta: i32,
     _nbe: i32,
     ndmax: i32,
-) {
-    let shade = 1.00001f64;
-    let slim = -225.0f64;
+) -> i32 {
     let bmin = -be - (nbt - 1) as f64 * *delta;
     let bmax = -be + (nbt - 1) as f64 * *delta + *delta / 100.0;
     if 1 + int((bmax - bmin) / *delta) > ndmax {
         let strng = format!("ndmax needs to be at least {}", i(1 + int((bmax - bmin) / *delta), 6));
         c.error("sbfill", &strng, " ");
     }
-    let mut j = nbeta;
-    let mut k = 0;
-    let mut bet = bmin;
-    while bet <= bmax {
-        k = k + 1;
-        let b = bet.abs();
-        // search for correct beta range
-        let mut idone = 0;
-        while idone == 0 {
-            if b > betan[j] {
-                if j == nbeta && b < shade * betan[j] {
-                    idone = 1;
-                } else {
-                    if j == nbeta {
-                        idone = 2;
-                    } else {
-                        // move up
-                        j = j + 1;
-                    }
-                }
-            } else {
-                if b > betan[j - 1] {
-                    idone = 1;
-                } else {
-                    if j == 2 {
-                        idone = 1;
-                    } else {
-                        // move down
-                        j = j - 1;
-                    }
-                }
-            }
-        }
-        // interpolate in this range
-        if idone == 1 {
-            // ls(j) is log(s(j)), or slim if s(j) <= 0
-            let st = ls[j as usize];
-            let stm = ls[(j - 1) as usize];
-            let mut v = st + (b - betan[j]) * (stm - st) / (betan[j - 1] - betan[j]);
-            if bet > ZERO {
-                v = v - bet;
-            }
-            let arg = v;
-            v = 0.0;
-            if arg > slim {
-                v = exp(arg);
-            }
-            sb[k] = v;
-        } else {
-            sb[k] = 0.0;
-        }
-        // if delta is too small for the current value of beta, increase it
-        while bet == bet + *delta {
-            *delta = *delta * 10.0;
-        }
-        bet = bet + *delta;
+    sbfill_core(nbt, delta, be, ls, betan, nbeta, 0, i32::MAX, false, |k, v| sb[k] = v)
+}
+
+/// The delta that sbfill leaves for (nbt, delta, be) and its number of
+/// points, from the same loop without the table (no exp). None where
+/// sbfill stops (ndmax too small).
+fn sbfill_delta(nbt: i32, delta: f64, be: f64, ndmax: i32) -> Option<(f64, i32)> {
+    let mut delta = delta;
+    let bmin = -be - (nbt - 1) as f64 * delta;
+    let bmax = -be + (nbt - 1) as f64 * delta + delta / 100.0;
+    if 1 + int((bmax - bmin) / delta) > ndmax {
+        return None;
     }
+    let dummy = RV::new(0);
+    let k = sbfill_core(nbt, &mut delta, be, &[], &dummy, 0, 0, 0, false, |_, _| {});
+    Some((delta, k))
+}
+
+/// betan(1..nbeta) is strictly increasing (no NaN).
+fn ascending_strict(betan: &RV, nbeta: i32) -> bool {
+    let n = (nbeta.max(0) as usize).min(betan.0.len());
+    betan.0[..n].windows(2).all(|w| w[0] < w[1])
+}
+
+/// sb(lo+1..hi) as the serial loop has it just before beta i of an alpha:
+/// each point m has the value of the latest earlier beta of the alpha that
+/// set it (info(ip) = (delta at the start of beta ip, number of points it
+/// set)), else the value in base (sb at the start of the alpha).
+#[allow(clippy::too_many_arguments)]
+fn sb_patch(
+    sb: &mut RV, lo: i32, hi: i32, i: i32, info: &[(f64, i32)], base: &RV, nbt: i32, ls: &[f64], betan: &RV,
+    nbeta: i32, mono: bool,
+) {
+    let mut covered = lo;
+    let mut ip = i;
+    while covered < hi && ip > 1 {
+        ip -= 1;
+        let (d0, ks) = info[ip as usize];
+        if ks > covered {
+            let top = ks.min(hi);
+            let mut d = d0;
+            sbfill_core(nbt, &mut d, betan[ip], ls, betan, nbeta, covered, top, mono, |k, v| sb[k] = v);
+            covered = top;
+        }
+    }
+    for m in covered + 1..=hi {
+        sb[m] = base[m];
+    }
+}
+
+/// Set sb to what the serial beta loop of an alpha leaves in it: each point
+/// from the latest beta that set it (the others are not changed).
+fn sb_final(sb: &mut RV, info: &[(f64, i32)], nbt: i32, ls: &[f64], betan: &RV, nbeta: i32) {
+    let mono = ascending_strict(betan, nbeta);
+    let mut covered = 0;
+    for ip in (1..info.len()).rev() {
+        let (d0, ks) = info[ip];
+        if ks > covered {
+            let mut d = d0;
+            sbfill_core(nbt, &mut d, betan[ip as i32], ls, betan, nbeta, covered, ks, mono, |k, v| sb[k] = v);
+            covered = ks;
+        }
+    }
+}
+
+/// One beta of the convolution loop of `trans`: sbfill, the convolution
+/// sum and the delta-function part; delta is left as the Fortran leaves
+/// it. With pt = (info, base) the points that the convolution reads but
+/// this sbfill does not set are set first with `sb_patch`, so that the
+/// result does not depend on what sb held before.
+#[allow(clippy::too_many_arguments)]
+fn trans_beta(
+    c: &mut Ctx, sb: &mut RV, etab: &mut Vec<f64>, etab_delta: &mut f64, sd: &RV, nbt: i32, delta: &mut f64, be: f64,
+    lap: &[f64], betan: &RV, nbeta: i32, ibeta: i32, ndmax: i32, al: f64, f0: f64, pt: Option<(&[(f64, i32)], &RV)>,
+) -> f64 {
+    let tiny = 1.0e-30f64;
+    let mut s = 0.0f64;
+
+    //--prepare table of continuous ss on new interval
+    let kset = sbfill(c, sb, nbt, delta, be, lap, betan, nbeta, ibeta, ndmax);
+    if let Some((info, base)) = pt {
+        let need = 2 * nbt - 1;
+        if kset < need {
+            let mono = ascending_strict(betan, nbeta);
+            sb_patch(sb, kset, need, ibeta, info, base, nbt, lap, betan, nbeta, mono);
+        }
+    }
+    let delta = *delta;
+
+    //--convolve s-transport with s-continuous
+    if etab_delta.to_bits() != delta.to_bits() || etab.len() < nbt as usize {
+        *etab_delta = delta;
+        *etab = (0..nbt.max(1) as usize).map(|m| exp(-(m as f64 * delta))).collect();
+    }
+    for k in 1..=nbt {
+        let mut ff = (2 * ((k - 1) % 2 + 1)) as f64;
+        if k == 1 || k == nbt {
+            ff = 1.0;
+        }
+        s = s + ff * sd[k] * sb[nbt + k - 1];
+        s = s + ff * sd[k] * sb[nbt - k + 1] * etab[(k - 1) as usize];
+    }
+    s = s * delta / 3.0;
+    if s < tiny {
+        s = 0.0;
+    }
+    let st = terps(sd, nbt, delta, be);
+    if st > ZERO {
+        s = s + exp(-al * f0) * st;
+    }
+    s
+}
+
+/// `trans_beta` for every beta of an alpha, split between threads, with
+/// pt = (info, base): result(ibeta) = (s, delta at the start, delta at the
+/// end), info(ibeta) = (delta at the start, number of sbfill points). The
+/// delta at the start of each beta and the number of points come first
+/// from `sbfill_delta`, so the betas do not depend on each other. base is
+/// sb at the start of the alpha. A result is None if its work stopped or
+/// tried to write (the caller computes it again). Both are empty with one
+/// thread or little work: the caller then runs the serial loop.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn trans_pre(
+    sd: &RV, nbt: i32, delta: f64, lap: &[f64], betan: &RV, nbeta: i32, ndmax: i32, al: f64, f0: f64, base: &RV,
+) -> (Vec<Option<(f64, f64, f64)>>, Vec<(f64, i32)>) {
+    let nth = crate::util::threads();
+    if nth <= 1 || nbeta < 2 || (nbeta as i64) * (nbt as i64) < 200_000 {
+        return (Vec::new(), Vec::new());
+    }
+    let nb = nbeta as usize;
+    // the delta at the start of each beta and the points that sbfill sets,
+    // as in the serial loop; (NaN, 0) after a beta where sbfill stops
+    // (in blocks: each block is found in parallel with the delta at its
+    // start; where delta changes, the next block starts after that beta)
+    let mut info = vec![(f64::NAN, 0i32); nb + 1];
+    let mut d = delta;
+    let mut first = 1usize;
+    let block = 64 * nth;
+    'chain: while first <= nb {
+        let last = (first + block - 1).min(nb);
+        let mut r: Vec<Option<(f64, i32)>> = vec![None; last - first + 1];
+        let per = r.len().div_ceil(nth);
+        std::thread::scope(|sc| {
+            for (ic, part) in r.chunks_mut(per).enumerate() {
+                sc.spawn(move || {
+                    for (j, slot) in part.iter_mut().enumerate() {
+                        let ibeta = first + ic * per + j;
+                        *slot = sbfill_delta(nbt, d, betan[ibeta as i32], ndmax);
+                    }
+                });
+            }
+        });
+        for ibeta in first..=last {
+            match r[ibeta - first] {
+                Some((dn, k)) => {
+                    info[ibeta] = (d, k);
+                    if dn.to_bits() != d.to_bits() {
+                        d = dn;
+                        first = ibeta + 1;
+                        continue 'chain;
+                    }
+                }
+                None => {
+                    info[ibeta] = (d, 0);
+                    break 'chain;
+                }
+            }
+        }
+        first = last + 1;
+    }
+    let info_r = &info;
+    let mut out: Vec<Option<(f64, f64, f64)>> = vec![None; nb + 1];
+    let chunk = nb.div_ceil(nth);
+    std::thread::scope(|sc| {
+        for (ic, part) in out[1..].chunks_mut(chunk).enumerate() {
+            sc.spawn(move || {
+                let mut wc = Ctx::new(crate::fio::Io::detached());
+                let mut sb = RV::new(base.0.len());
+                let mut etab = Vec::new();
+                let mut etab_delta = f64::NAN;
+                for (j, slot) in part.iter_mut().enumerate() {
+                    let ibeta = (ic * chunk + j + 1) as i32;
+                    let be = betan[ibeta];
+                    let d0 = info_r[ibeta as usize].0;
+                    if d0.is_nan() {
+                        continue;
+                    }
+                    let mut d = d0;
+                    wc.io.touched = false;
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        trans_beta(
+                            &mut wc, &mut sb, &mut etab, &mut etab_delta, sd, nbt, &mut d, be, lap, betan, nbeta,
+                            ibeta, ndmax, al, f0, Some((info_r.as_slice(), base)),
+                        )
+                    }));
+                    *slot = match r {
+                        Ok(s) if !wc.io.touched => Some((s, d0, d)),
+                        _ => None,
+                    };
+                }
+            });
+        }
+    });
+    (out, info)
 }
 
 /// Modified Bessel function K1 (the exponential part for x>1 is omitted).

@@ -322,6 +322,15 @@ impl Io {
     }
 
     /// Write one formatted record.
+    /// `write_line` of an ASCII byte string.
+    pub fn write_line_bytes(&mut self, nun: i32, s: &[u8]) {
+        let u = self.unit(nun, true);
+        u.recs.truncate(u.pos);
+        u.recs.push(s.to_vec());
+        u.pos += 1;
+        u.dirty = true;
+    }
+
     pub fn write_line(&mut self, nun: i32, s: &str) {
         let u = self.unit(nun, true);
         u.recs.truncate(u.pos);
