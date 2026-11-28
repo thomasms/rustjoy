@@ -53,8 +53,9 @@ enum Mode {
 struct FmtUnit {
     pub(crate) path: String,
     mode: Mode,
-    /// Lines read so far (for BACKSPACE / REWIND of formatted files).
-    nread: usize,
+    /// Bytes read so far: a WRITE after reads starts here (the rest of
+    /// the file is cut off, as for any sequential write).
+    nread: u64,
 }
 
 struct Scratch {
@@ -245,14 +246,14 @@ impl Units {
                         f.mode = Mode::Eof;
                         Rd::Eof
                     }
-                    Ok(_) => {
+                    Ok(nb) => {
+                        f.nread += nb as u64;
                         if buf.last() == Some(&b'\n') {
                             buf.pop();
                             if buf.last() == Some(&b'\r') {
                                 buf.pop();
                             }
                         }
-                        f.nread += 1;
                         Rd::Line(buf)
                     }
                     Err(_) => {
@@ -286,14 +287,28 @@ impl Units {
     pub fn write<S: AsRef<[u8]>>(&mut self, u: i32, s: S) {
         let f = self.fmt(u);
         if !matches!(f.mode, Mode::Write(_)) {
-            let h = match OpenOptions::new().write(true).create(true).truncate(true).open(&f.path) {
+            // position of the write: 0 for a unit just opened or rewound,
+            // else after the records read
+            let at = match f.mode {
+                Mode::Fresh => 0,
+                _ => f.nread,
+            };
+            let h = match OpenOptions::new().write(true).create(true).truncate(at == 0).open(&f.path) {
                 Ok(h) => h,
                 Err(_) => {
                     let p = f.path.clone();
                     runtime_error(u, &p, "Cannot open file")
                 }
             };
-            f.mode = Mode::Write(BufWriter::with_capacity(1 << 16, h));
+            if at > 0 {
+                use std::io::{Seek, SeekFrom};
+                let _ = h.set_len(at);
+                let mut h2 = h;
+                let _ = h2.seek(SeekFrom::Start(at));
+                f.mode = Mode::Write(BufWriter::with_capacity(1 << 16, h2));
+            } else {
+                f.mode = Mode::Write(BufWriter::with_capacity(1 << 16, h));
+            }
         }
         if let Mode::Write(w) = &mut f.mode {
             let _ = w.write_all(s.as_ref());
@@ -360,8 +375,26 @@ impl Units {
         self.uread(u).is_some()
     }
 
-    /// END FILE on a scratch unit.
+    /// END FILE: the file ends at the current position.
     pub fn endfile(&mut self, u: i32) {
+        if let Some(Unit::Fmt(f)) = self.units.get_mut(&u) {
+            match &mut f.mode {
+                Mode::Write(w) => {
+                    let _ = w.flush();
+                }
+                Mode::Read(_) | Mode::Eof => {
+                    if let Ok(h) = OpenOptions::new().write(true).open(&f.path) {
+                        let _ = h.set_len(f.nread);
+                    }
+                    f.mode = Mode::Eof;
+                }
+                Mode::Fresh => {
+                    let _ = OpenOptions::new().write(true).create(true).truncate(true).open(&f.path);
+                    f.mode = Mode::Eof;
+                }
+            }
+            return;
+        }
         let s = self.scr(u);
         s.recs.truncate(s.pos);
     }

@@ -15,10 +15,11 @@ mod endfio;
 mod fio;
 mod linear;
 mod merger;
+mod relabel;
 mod numcheck;
 
 /// The programs, in the order of the PREPRO verification run.
-const PROGRAMS: &[(&str, fn() -> !)] = &[("endf2c", endf2c::run), ("linear", linear::run), ("merger", merger::run)];
+const PROGRAMS: &[(&str, fn() -> !)] = &[("endf2c", endf2c::run), ("linear", linear::run), ("merger", merger::run), ("relabel", relabel::run)];
 
 fn usage() -> ! {
     eprintln!("prustpro {} - Rust port of PREPRO 2026-1", env!("CARGO_PKG_VERSION"));

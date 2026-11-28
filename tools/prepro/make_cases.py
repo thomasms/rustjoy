@@ -168,8 +168,32 @@ def merger_cases(endf_dir, out):
         n += 1
     print(n, 'cases')
 
+def relabel_cases(src_dir, out):
+    """RELABEL: FORTRAN source files (for example the PREPRO sources)."""
+    n = 0
+    for root, _, fs in os.walk(src_dir):
+        for f in sorted(fs):
+            if not (f.endswith('.f') or f.endswith('.h')):
+                continue
+            case = os.path.join(out, 'relabel', os.path.relpath(os.path.join(root, f), src_dir).replace('/', '_'))
+            os.makedirs(case, exist_ok=True)
+            link(case, 'SRC.F', os.path.join(root, f))
+            write(case, 'RELABEL.INP', 'SRC.F\nSRC.OUT\n')
+            n += 1
+    for name, text in {'noinp': None, 'blank': '\n\n', 'missing': 'NOFILE\nX\n', 'one': 'SRC.F\n'}.items():
+        case = os.path.join(out, 'relabel', 'sp-' + name)
+        os.makedirs(case, exist_ok=True)
+        link(case, 'RELABEL.IN', os.path.join(src_dir, 'merger.f'))
+        link(case, 'SRC.F', os.path.join(src_dir, 'dictin.f'))
+        if text is not None:
+            write(case, 'RELABEL.INP', text)
+        n += 1
+    print(n, 'cases')
+
 def main():
     prog, endf_dir, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    if prog == 'relabel':
+        return relabel_cases(endf_dir, out)
     if prog == 'merger':
         return merger_cases(endf_dir, out)
     inp_name, decks = DECKS[prog]
