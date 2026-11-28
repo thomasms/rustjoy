@@ -34,6 +34,14 @@ for x in status stdout; do
         bad=1
     fi
 done
+# standard error only for normal ends (gfortran runtime errors print line
+# numbers and a backtrace)
+if [ "$(cat "$work/f.status")" = 0 ] && [ "$(cat "$work/r.status")" = 0 ]; then
+    if ! mask "$work/f.stderr" | cmp -s - "$(mask "$work/r.stderr" > "$work/r.stderr.m"; echo "$work/r.stderr.m")"; then
+        echo "DIFF $prog stderr"
+        bad=1
+    fi
+fi
 for f in $(cd "$work/f" && find . -type f | sort); do
     if [ ! -f "$work/r/$f" ]; then
         echo "MISSING $prog $f"

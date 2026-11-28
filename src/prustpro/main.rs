@@ -10,6 +10,7 @@
 #[path = "../common/ffmt.rs"]
 mod ffmt;
 
+mod convert;
 mod endf2c;
 mod endfio;
 mod fio;
@@ -19,7 +20,7 @@ mod relabel;
 mod numcheck;
 
 /// The programs, in the order of the PREPRO verification run.
-const PROGRAMS: &[(&str, fn() -> !)] = &[("endf2c", endf2c::run), ("linear", linear::run), ("merger", merger::run), ("relabel", relabel::run)];
+const PROGRAMS: &[(&str, fn() -> !)] = &[("endf2c", endf2c::run), ("linear", linear::run), ("merger", merger::run), ("relabel", relabel::run), ("convert", convert::run)];
 
 fn usage() -> ! {
     eprintln!("prustpro {} - Rust port of PREPRO 2026-1", env!("CARGO_PKG_VERSION"));

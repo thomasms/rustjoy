@@ -190,8 +190,85 @@ def relabel_cases(src_dir, out):
         n += 1
     print(n, 'cases')
 
+SYNTH = """      PROGRAM TEST
+     1 (A,B)
+C---- comment that is copied
+C***** DOUBLE
+      IMPLICIT REAL*8 (A-H,O-Z)
+C***** DOUBLE
+C***** SINGLE
+C     IMPLICIT REAL*4 (A-H,O-Z)
+C***** SINGLE
+C*****CHARACTER
+      CHARACTER*4 A
+C*****CHARACTER
+C***INTEGER
+CXX   INTEGER A
+C***INTEGER
+C*** STOP
+      STOP
+C*** STOP
+C***** EXIT
+C     CALL EXIT
+C***** EXIT
+C***** CIVIC
+C***** NAMES
+      OPEN(10,FILE='X')
+C***** NAMES
+C***** CIVIC
+C***** REWIND
+C***** SAVE
+      SAVE
+C***** SAVE
+C***** CLOSE
+      CLOSE(10)
+C***** CLOSE
+C***** ACTION
+C***** ACTION
+C***** ENDFILE
+C     ENDFILE 10
+C***** ENDFILE
+C***** REWIND
+C***** UNKNOWN
+      X = 1.0          longer line with trailing text in columns 73-80 ABCDEFGH
+C*********************
+      END
+"""
+
+def convert_cases(src_dir, out):
+    """CONVERT: keyword lists on synthetic and real sources."""
+    keys = ['DOUBLE INTEGER PROGRAM', 'SINGLE CHARACTER STOP NOID', 'DOUBLE SINGLE INTEGER CHARACTER',
+            'EXIT CIVIC NAMES SAVE ACTION CLOSE REWIND ENDFILE', '', 'NOID PROGRAM',
+            'DOUBLE BADWORD', ' DOUBLE  STOP   EXIT     INTEGER    NAMES  SAVE   ACTION   CLOSE  CIVIC REWIND',
+            'PROGRAMX DOUBLE', 'DOUBLE' + ' ' * 60 + 'INTEGER']
+    srcs = {'synth': None}
+    for f in sorted(os.listdir(src_dir)):
+        if f in ('recent.f', 'sixpak.f', 'sigma1.f', 'scratcha.f', 'merger.f'):
+            srcs[f] = os.path.join(src_dir, f)
+    n = 0
+    for k, key in enumerate(keys):
+        for s, path in srcs.items():
+            case = os.path.join(out, 'convert', 'k%02d-%s' % (k, s))
+            os.makedirs(case, exist_ok=True)
+            if path is None:
+                write(case, 'SRC.F', SYNTH)
+            else:
+                link(case, 'SRC.F', path)
+            write(case, 'CONVERT.INP', key + '\nSRC.F\nSRC.OUT\n')
+            n += 1
+    for name, text in {'noinp': None, 'nonames': 'DOUBLE\n', 'missing': 'DOUBLE\nNOFILE\n\n', 'blank': 'DOUBLE\n\n\n'}.items():
+        case = os.path.join(out, 'convert', 'sp-' + name)
+        os.makedirs(case, exist_ok=True)
+        write(case, 'CONVERT.IN', SYNTH)
+        if text is not None:
+            write(case, 'CONVERT.INP', text)
+        n += 1
+    print(n, 'cases')
+
 def main():
     prog, endf_dir, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    if prog == 'convert':
+        return convert_cases(endf_dir, out)
     if prog == 'relabel':
         return relabel_cases(endf_dir, out)
     if prog == 'merger':

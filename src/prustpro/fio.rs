@@ -285,6 +285,18 @@ impl Units {
 
     /// Write one or more lines (separated by '\n', no final '\n').
     pub fn write<S: AsRef<[u8]>>(&mut self, u: i32, s: S) {
+        // preconnected units: 0 = standard error, 6 = standard output
+        if u == 0 && !self.units.contains_key(&0) {
+            flush_stdout();
+            let mut e = std::io::stderr();
+            let _ = e.write_all(s.as_ref());
+            let _ = e.write_all(b"\n");
+            return;
+        }
+        if u == 6 && !self.units.contains_key(&6) {
+            out(s);
+            return;
+        }
         let f = self.fmt(u);
         if !matches!(f.mode, Mode::Write(_)) {
             // position of the write: 0 for a unit just opened or rewound,
