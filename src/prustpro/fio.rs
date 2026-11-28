@@ -63,9 +63,16 @@ struct Scratch {
     pos: usize,
 }
 
+/// A formatted scratch file (OPEN(u,STATUS='SCRATCH')), kept in memory.
+struct FmtScratch {
+    lines: Vec<Vec<u8>>,
+    pos: usize,
+}
+
 enum Unit {
     Fmt(FmtUnit),
     Scr(Scratch),
+    FScr(FmtScratch),
 }
 
 /// Outcome of reading one record.
@@ -188,6 +195,12 @@ impl Units {
         }
     }
 
+    /// OPEN(u, STATUS='SCRATCH') (formatted).
+    pub fn open_fscratch(&mut self, u: i32) {
+        self.close(u);
+        self.units.insert(u, Unit::FScr(FmtScratch { lines: Vec::new(), pos: 0 }));
+    }
+
     /// OPEN(u, STATUS='SCRATCH', FORM='UNFORMATTED').
     pub fn open_scratch(&mut self, u: i32) {
         self.close(u);
@@ -226,6 +239,13 @@ impl Units {
 
     /// Read one formatted record.
     pub fn read(&mut self, u: i32) -> Rd {
+        if let Some(Unit::FScr(s)) = self.units.get_mut(&u) {
+            if s.pos >= s.lines.len() {
+                return Rd::Eof;
+            }
+            s.pos += 1;
+            return Rd::Line(s.lines[s.pos - 1].clone());
+        }
         let f = self.fmt(u);
         if let Mode::Fresh = f.mode {
             match File::open(&f.path) {
@@ -277,7 +297,10 @@ impl Units {
         match self.read(u) {
             Rd::Line(l) => l,
             Rd::Eof => {
-                let p = self.fmt(u).path.clone();
+                let p = match self.units.get(&u) {
+                    Some(Unit::Fmt(f)) => f.path.clone(),
+                    _ => String::new(),
+                };
                 runtime_error(u, &p, "End of file")
             }
         }
@@ -295,6 +318,15 @@ impl Units {
         }
         if u == 6 && !self.units.contains_key(&6) {
             out(s);
+            return;
+        }
+        if let Some(Unit::FScr(sc)) = self.units.get_mut(&u) {
+            sc.lines.truncate(sc.pos);
+            // a write of several records ('/' in the format)
+            for l in s.as_ref().split(|&c| c == b'\n') {
+                sc.lines.push(l.to_vec());
+            }
+            sc.pos = sc.lines.len();
             return;
         }
         let f = self.fmt(u);
@@ -339,6 +371,7 @@ impl Units {
                 f.nread = 0;
             }
             Some(Unit::Scr(s)) => s.pos = 0,
+            Some(Unit::FScr(s)) => s.pos = 0,
             None => {}
         }
     }
@@ -389,6 +422,10 @@ impl Units {
 
     /// END FILE: the file ends at the current position.
     pub fn endfile(&mut self, u: i32) {
+        if let Some(Unit::FScr(s)) = self.units.get_mut(&u) {
+            s.lines.truncate(s.pos);
+            return;
+        }
         if let Some(Unit::Fmt(f)) = self.units.get_mut(&u) {
             match &mut f.mode {
                 Mode::Write(w) => {

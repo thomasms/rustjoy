@@ -99,7 +99,8 @@ DICTIN = {
     'blank': '\n\n',
 }
 
-DECKS = {'linear': ('LINEAR.INP', LINEAR), 'dictin': ('DICTIN.INP', DICTIN)}
+DECKS = {'linear': ('LINEAR.INP', LINEAR), 'dictin': ('DICTIN.INP', DICTIN),
+         'activate': ('ACTIVATE.INP', DICTIN)}
 
 def link(case, name, src):
     dst = os.path.join(case, name)
