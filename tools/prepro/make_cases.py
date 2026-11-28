@@ -95,8 +95,83 @@ ENDFB.OUT
 
 DECKS = {'linear': ('LINEAR.INP', LINEAR)}
 
+def link(case, name, src):
+    dst = os.path.join(case, name)
+    if not os.path.lexists(dst):
+        os.symlink(os.path.abspath(src), dst)
+
+def write(case, name, text):
+    with open(os.path.join(case, name), 'w') as h:
+        h.write(text)
+
+def merger_cases(endf_dir, out):
+    """MERGER: several tapes, request lists by MAT or ZA."""
+    files = endf_files(endf_dir)
+    groups = [files[i:i + 3] for i in range(0, len(files), 3)]
+    reqs = {
+        'all': ('    0', ''),
+        'mat': ('    0', '   100 0  0  2000 0  0          7\n  2600 3  1  9999 3999\n  9200 1  0  9499 3 20         33\n'),
+        'za': ('    1', '  1000 0  0 30000 0  0\n 90000 3  1 99000 3102\n'),
+        'mf3': ('    0', '     0 3  0     0 3999\n'),
+    }
+    n = 0
+    for gi, g in enumerate(groups):
+        for rname, (how, rq) in reqs.items():
+            case = os.path.join(out, 'merger', '%s-%02d' % (rname, gi))
+            os.makedirs(case, exist_ok=True)
+            names = []
+            for k, f in enumerate(g):
+                nm = 'TAPE%d.ENDF' % k
+                link(case, nm, os.path.join(endf_dir, f))
+                names.append(nm)
+            # the same tape twice (duplicates), and a label line
+            label = 'prustpro merger test %-46s' % rname
+            text = 'MERGED.OUT\n%s%s\n%s\n%s\nEND\n%s\n' % (
+                label[:66], '6000' + how[-2:], '\n'.join(names), names[0], rq)
+            write(case, 'MERGER.INP', text)
+            n += 1
+    # special cases
+    sp = {
+        'blankname': 'X.OUT\n%-66s   0 0\n\n\nEND\n\n' % 'label',
+        'missing': '\n%-66s   0 0\nNOFILE\nTAPE0.ENDF\nEND\n\n' % 'label',
+        'one': '\n%-66s   0 0\nTAPE0.ENDF\nend\n     0 3  0     0 3999\n\n' % '',
+        'none': '\n%-66s   0 0\nEND\n' % 'label',
+        'onlyone': 'OUT\n%-66s   0 0\nTAPE0.ENDF\nEND\n\n' % 'label',
+        'unsorted': 'OUT\n%-66s   0 0\nREV.ENDF\nTAPE0.ENDF\nEND\n\n' % 'label',
+        'empty': 'OUT\n%-66s   0 0\nEMPTY\nTAPE0.ENDF\nEND\n\n' % 'label',
+        'nomatch': 'OUT\n%-66s   0 0\nTAPE0.ENDF\nTAPE1.ENDF\nEND\n  9990 3  1  9991 3  1\n\n' % 'label',
+    }
+    for name, text in sp.items():
+        case = os.path.join(out, 'merger', 'sp-' + name)
+        os.makedirs(case, exist_ok=True)
+        link(case, 'TAPE0.ENDF', os.path.join(endf_dir, files[0]))
+        link(case, 'TAPE1.ENDF', os.path.join(endf_dir, files[5]))
+        link(case, 'ENDFB.IN1', os.path.join(endf_dir, files[1]))
+        link(case, 'ENDFB.IN2', os.path.join(endf_dir, files[2]))
+        write(case, 'EMPTY', '')
+        # sections in reverse MT order
+        lines = open(os.path.join(endf_dir, files[3]), 'rb').read().split(b'\n')
+        write(case, 'MERGER.INP', text)
+        body = [l for l in lines[1:] if len(l) >= 75]
+        secs, cur = [], []
+        for l in body:
+            cur.append(l)
+            if l[72:75].strip() in (b'0', b''):
+                secs.append(cur)
+                cur = []
+        with open(os.path.join(case, 'REV.ENDF'), 'wb') as h:
+            h.write(lines[0] + b'\n')
+            for s in reversed(secs[:-3]):
+                h.write(b'\n'.join(s) + b'\n')
+            for s in secs[-3:]:
+                h.write(b'\n'.join(s) + b'\n')
+        n += 1
+    print(n, 'cases')
+
 def main():
     prog, endf_dir, out = sys.argv[1], sys.argv[2], sys.argv[3]
+    if prog == 'merger':
+        return merger_cases(endf_dir, out)
     inp_name, decks = DECKS[prog]
     files = endf_files(endf_dir)
     n = 0

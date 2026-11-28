@@ -152,6 +152,11 @@ impl Units {
     pub fn open(&mut self, u: i32, path: &str) {
         self.close(u);
         let p = path.trim_end().to_string();
+        // gfortran creates a file that does not exist at OPEN; an existing
+        // file is left as it is until the first write.
+        if !std::path::Path::new(&p).exists() {
+            let _ = OpenOptions::new().write(true).create(true).truncate(false).open(&p);
+        }
         self.units.insert(
             u,
             Unit::Fmt(FmtUnit { path: p, mode: Mode::Fresh, nread: 0 }),
