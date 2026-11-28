@@ -93,7 +93,13 @@ ENDFB.OUT
  1.0000E+01 2.0000E-03""",
 }
 
-DECKS = {'linear': ('LINEAR.INP', LINEAR)}
+DICTIN = {
+    'std': 'ENDFB.IN\nENDFB.OUT\n',
+    'none': None,
+    'blank': '\n\n',
+}
+
+DECKS = {'linear': ('LINEAR.INP', LINEAR), 'dictin': ('DICTIN.INP', DICTIN)}
 
 def link(case, name, src):
     dst = os.path.join(case, name)
