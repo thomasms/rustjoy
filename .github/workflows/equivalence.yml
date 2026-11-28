@@ -1,0 +1,67 @@
+# The full byte-for-byte comparison with NJOY2016 (tools/run_all.sh), one
+# job per module (tools/ci_module.sh), on Linux x86-64. It takes hours in
+# total, so it runs once a week and when started by hand (Actions tab,
+# "Equivalence", "Run workflow"), not on each push.
+name: Equivalence
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      modules:
+        description: "Modules to check, separated by spaces (empty: all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NJOY2016_COMMIT: ab27c6414a0f25b173f2b637e6dc7e428fdaff00
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      modules: ${{ steps.m.outputs.modules }}
+    steps:
+      - id: m
+        env:
+          WANT: ${{ github.event.inputs.modules }}
+        run: |
+          ALL="reconr broadr heatr moder thermr unresr gaspr purr leapr mixr resxsr dtfr gaminr groupr powr"
+          SEL=${WANT:-$ALL}
+          for m in $SEL; do
+            case " $ALL " in *" $m "*) ;; *) echo "unknown module: $m"; exit 1;; esac
+          done
+          echo "modules=$(printf '%s\n' $SEL | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  module:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJson(needs.plan.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: njoy/NJOY2016
+          ref: ${{ env.NJOY2016_COMMIT }}
+          path: njoy2016
+      - name: Free disk space (the compare work directories are large)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gfortran cmake
+          gfortran --version | head -1
+          rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Compare ${{ matrix.module }}
+        run: tools/ci_module.sh ${{ matrix.module }} njoy2016 "$RUNNER_TEMP/work"

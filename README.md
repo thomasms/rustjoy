@@ -539,6 +539,26 @@ to an `njoy` program:
 NJOY=/path/to/njoy cargo test --release --test examples
 ```
 
+On macOS (or another platform), build NJOY2016 there and compare with it
+only: `RUSTJOY_LIVE_ONLY=1` skips the stored Linux checksums.
+
+```bash
+NJOY=/path/to/njoy RUSTJOY_LIVE_ONLY=1 cargo test --release --test examples
+```
+
+### Continuous integration
+
+* `.github/workflows/ci.yml` runs on each push and pull request. On Linux
+  x86-64, it builds the port, runs the examples against the stored results
+  (with the default threads and with one thread) and runs `ffmt_check`. On
+  macOS (Apple silicon), it builds NJOY2016 with gfortran and compares the
+  examples with it directly.
+* `.github/workflows/equivalence.yml` runs the full comparison with
+  NJOY2016, one job per module, with `tools/ci_module.sh`. It takes hours,
+  so it runs once a week, or by hand from the Actions tab (you can give a
+  list of modules). The script also runs locally:
+  `tools/ci_module.sh thermr /path/to/njoy2016 /new/work/dir`.
+
 The debug build (`cargo test`) gives the same results, but it is about
 six times slower. After a test passes, its work directory in `target/tmp` is
 removed; after a failure, it is kept for inspection.

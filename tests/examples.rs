@@ -17,6 +17,11 @@
 //!   same deck and compares the files directly. A difference is then shown
 //!   with its first byte offset and, for text files, the line.
 //!
+//! With `NJOY` set and `RUSTJOY_LIVE_ONLY=1`, the tests compare only with
+//! that NJOY2016 run, not with `reference.txt`: for another platform (for
+//! example macOS, whose libm can change the last bit of some results), where
+//! NJOY2016 built there is the reference.
+//!
 //! With `NJOY` set and `RUSTJOY_UPDATE_REFERENCES=1`, the tests write
 //! `reference.txt` again from the NJOY2016 results (never from rustjoy).
 //!
@@ -94,12 +99,15 @@ fn check_example(name: &str) {
 
     let rust = run_deck(Path::new(env!("CARGO_BIN_EXE_rustjoy")), &src, &work.join("rustjoy"));
     let mut errors = Vec::new();
+    let live_only = std::env::var_os("NJOY").is_some() && std::env::var_os("RUSTJOY_LIVE_ONLY").is_some();
 
     if let Some(njoy) = std::env::var_os("NJOY") {
         let njoy = run_deck(Path::new(&njoy), &src, &work.join("njoy"));
         errors.extend(compare_runs(&njoy, &rust));
         if std::env::var_os("RUSTJOY_UPDATE_REFERENCES").is_some() {
             fs::write(src.join("reference.txt"), reference_text(&njoy)).unwrap();
+        } else if live_only {
+            // NJOY2016 of this platform is the reference
         } else if let Some(reference) = read_reference(&src) {
             let e = compare_with_reference(&reference, &njoy);
             if !e.is_empty() {
@@ -113,9 +121,11 @@ fn check_example(name: &str) {
         }
     }
 
-    match read_reference(&src) {
-        Some(reference) => errors.extend(compare_with_reference(&reference, &rust)),
-        None => errors.push(format!("examples/{}/reference.txt is missing", name)),
+    if !live_only {
+        match read_reference(&src) {
+            Some(reference) => errors.extend(compare_with_reference(&reference, &rust)),
+            None => errors.push(format!("examples/{}/reference.txt is missing", name)),
+        }
     }
 
     if errors.is_empty() {

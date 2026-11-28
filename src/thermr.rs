@@ -1653,12 +1653,8 @@ impl Sab {
     }
 
     /// `sig`: the double-differential scattering cross section.
-    fn sig(&self, e: f64, ep: f64, u: f64, tev: f64) -> f64 {
-        self.sig_c(e, ep, u, tev, &mut SigCache::new())
-    }
-
-    /// `sig`, with the search results kept in sc between calls (the result
-    /// is the same as `sig`).
+    /// The search results are kept in sc between calls; they give the same
+    /// result as the full searches.
     fn sig_c(&self, e: f64, ep: f64, u: f64, tev: f64, sc: &mut SigCache) -> f64 {
         const SIGMIN: f64 = 1.0e-10;
         const AMIN: f64 = 1.0e-6;

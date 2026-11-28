@@ -1,0 +1,76 @@
+# Build and test on each push and pull request.
+#
+# linux: the example decks against the stored NJOY2016 results (made on
+#   Linux x86-64), with the default threads and with one thread, and the
+#   check of the fast number routines against the old ones.
+# macos: Apple silicon. NJOY2016 is built here with gfortran, and the port
+#   is compared with it directly (macOS libm can change the last bit of
+#   some results, so the Linux checksums do not apply).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NJOY2016_COMMIT: ab27c6414a0f25b173f2b637e6dc7e428fdaff00
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Build
+        run: cargo build --release --locked
+      - name: Build with --features powr-cards
+        run: cargo build --release --locked --features powr-cards
+      - name: Examples against the stored NJOY2016 results
+        run: cargo test --release --locked
+      - name: Examples with one thread
+        run: NJOY_THREADS=1 cargo test --release --locked --test examples
+      - name: Fast number routines against the old ones
+        run: |
+          cargo build --release --locked --example ffmt_check
+          ./target/release/examples/ffmt_check
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: njoy/NJOY2016
+          ref: ${{ env.NJOY2016_COMMIT }}
+          path: njoy2016
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: gfortran
+        run: |
+          FC=$(ls /opt/homebrew/bin/gfortran-* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$FC" ]; then brew install gcc; FC=$(ls /opt/homebrew/bin/gfortran-* | sort -V | tail -1); fi
+          "$FC" --version | head -1
+          echo "FC=$FC" >> "$GITHUB_ENV"
+      - name: Build NJOY2016 (its CMake defaults)
+        run: |
+          cmake -S njoy2016 -B njoy-build -DCMAKE_Fortran_COMPILER="$FC" > cmake.log || { cat cmake.log; exit 1; }
+          cmake --build njoy-build --target njoy_executable -j "$(sysctl -n hw.ncpu)" > make.log || { tail -50 make.log; exit 1; }
+      - name: Build
+        run: cargo build --release --locked
+      - name: Examples against NJOY2016 built here
+        run: NJOY=$PWD/njoy-build/njoy RUSTJOY_LIVE_ONLY=1 cargo test --release --locked --test examples
+      - name: Examples with one thread
+        run: NJOY_THREADS=1 NJOY=$PWD/njoy-build/njoy RUSTJOY_LIVE_ONLY=1 cargo test --release --locked --test examples
+      - name: Fast number routines against the old ones
+        run: |
+          cargo build --release --locked --example ffmt_check
+          ./target/release/examples/ffmt_check
